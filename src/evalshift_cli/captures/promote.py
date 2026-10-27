@@ -30,7 +30,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from evalshift_cli.captures.claims import find_tool_claim
+from evalshift_cli.captures.claims import find_tool_claim, unbacked_history_claims
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
 from evalshift_cli.captures.native_messages import normalize_messages
 from evalshift_cli.captures.reader import CaptureRecord, suites_root, toolset_path
@@ -236,6 +236,12 @@ def build_example_from_capture(
     loss = _context_loss_warning(events, recovered.inputs, recovered.history)
     if loss is not None:
         warnings.append(loss)
+    if recovered.history is not None:
+        # Recorded history only: it keeps its tool rows, so "backed" is decidable. History
+        # reconstructed from earlier turns is text-only and must never be scanned.
+        history_claims = _history_claims_warning(recovered.history)
+        if history_claims is not None:
+            warnings.append(history_claims)
     tags = _build_tags(envelope.suite, opts.tags)
     expected = _recover_expected(events, warnings)
 
@@ -1252,6 +1258,29 @@ def _context_loss_warning(
             "captured. Pass the full messages list to capture.model_call(input=...)."
         )
     return None
+
+
+def _history_claims_warning(history: Sequence[ChatMessage]) -> str | None:
+    """One warning naming every recorded history reply that claims a tool action never taken.
+
+    See :func:`~evalshift_cli.captures.claims.unbacked_history_claims`. Positions are
+    1-based, as in ``captures/repair.py``.
+    """
+    claims = unbacked_history_claims(history)
+    if not claims:
+        return None
+    if len(claims) == 1:
+        position, phrase = claims[0]
+        return (
+            f'history message {position} (assistant) claims a tool action ("{phrase}") with no '
+            "tool call in its turn — this case replays with that claim in context."
+        )
+    positions = ", ".join(str(position) for position, _ in claims)
+    phrases = ", ".join(f'"{phrase}"' for _, phrase in claims)
+    return (
+        f"history messages {positions} (assistant) claim tool actions ({phrases}) with no "
+        "tool call in their turn — this case replays with those claims in context."
+    )
 
 
 def _build_tags(suite: str, extra: tuple[str, ...]) -> list[str]:

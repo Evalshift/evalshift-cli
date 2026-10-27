@@ -234,6 +234,7 @@ def _messages_call(
     *,
     messages: list[dict[str, Any]],
     input_tokens: int = 0,
+    tools_offered: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "type": "model_call",
@@ -245,7 +246,7 @@ def _messages_call(
         "output": "out",
         "input_tokens": input_tokens,
         "toolset_ref": "sha256:" + "ab" * 32,
-        "tools_offered": [],
+        "tools_offered": tools_offered if tools_offered is not None else [],
     }
 
 
@@ -774,6 +775,123 @@ def test_build_messages_list_model_role_coerced_to_assistant() -> None:
     assert built.example.history is not None
     assert [m.role for m in built.example.history] == ["user", "assistant"]
     assert built.example.history[1].content == "hello"
+
+
+class TestUnbackedHistoryClaims:
+    """A case whose *recorded* history carries a reply claiming a tool action it never
+    took replays with that fabrication in context -- worth a warning, not a block: the
+    current turn may be fine."""
+
+    _HISTORY_WARNING = (
+        'history message 2 (assistant) claims a tool action ("my notes search didn\'t") '
+        "with no tool call in its turn — this case replays with that claim in context."
+    )
+
+    @pytest.mark.parametrize("tools_offered", [["search_notes"], []])
+    def test_recorded_history_with_an_unbacked_claim_warns(self, tools_offered: list[str]) -> None:
+        """The turn-10 shape. The warning is about the history, not the current turn, so it
+        fires whether or not this turn was offered tools."""
+        messages = [
+            {"role": "user", "content": "PO number on the Acme contract?"},
+            {"role": "assistant", "content": _CLAIM_REPLY},
+            {"role": "user", "content": "Try the Globex one then."},
+        ]
+        events = [
+            _messages_call(0, messages=messages, tools_offered=tools_offered),
+            _final("Globex is PO-7.", 1),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+        assert built.warnings.count(self._HISTORY_WARNING) == 1
+
+    def test_several_unbacked_claims_aggregate_into_one_warning(self) -> None:
+        messages = [
+            {"role": "user", "content": "PO number on the Acme contract?"},
+            {"role": "assistant", "content": _CLAIM_REPLY},
+            {"role": "user", "content": "Friday?"},
+            {"role": "assistant", "content": "I've checked your calendar: it's clear."},
+            {"role": "user", "content": "Thanks."},
+        ]
+        events = [
+            _messages_call(0, messages=messages, tools_offered=["search_notes"]),
+            _final("You're welcome.", 1),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        claim_warnings = [w for w in built.warnings if "claim" in w]
+        assert claim_warnings == [
+            "history messages 2, 4 (assistant) claim tool actions "
+            '("my notes search didn\'t", "I\'ve checked") with no tool call in their '
+            "turn — this case replays with those claims in context."
+        ]
+
+    def test_a_claim_backed_by_a_recorded_call_does_not_warn(self) -> None:
+        messages = [
+            {"role": "user", "content": "PO number on the Acme contract?"},
+            {
+                "role": "assistant",
+                "content": "Let me look.",
+                "tool_calls": [{"id": "c1", "name": "search_notes", "arguments": {}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "nothing"},
+            {"role": "assistant", "content": _CLAIM_REPLY},
+            {"role": "user", "content": "Try the Globex one then."},
+        ]
+        events = [
+            _messages_call(0, messages=messages, tools_offered=["search_notes"]),
+            _final("Globex is PO-7.", 1),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert not any("claim" in w for w in built.warnings)
+
+    def test_reconstructed_history_is_not_scanned(self) -> None:
+        """Reconstructed history is text-only: scanning it would flag every past reply."""
+        turn0 = _envelope(
+            capture_id="cap_t0",
+            conversation_id="conv_1",
+            turn_index=0,
+            events=[
+                _model_call(0, model_input="Am I free Friday?"),
+                _tool_call("search_orders", 1, args={}),
+                _final("I checked your calendar: Friday is clear.", 2),
+            ],
+        )
+        turn1 = _envelope(
+            capture_id="cap_t1",
+            conversation_id="conv_1",
+            turn_index=1,
+            events=[_model_call(0, model_input="And Saturday?"), _final("Also clear.", 1)],
+        )
+
+        results = build_conversation_examples([_record(turn0), _record(turn1)], PromoteOptions())
+
+        _, built1 = results[1]
+        assert built1.example.history is not None
+        assert built1.example.history[1].content == "I checked your calendar: Friday is clear."
+        assert built1.blocked is None
+        assert not any("claim" in w for w in built1.warnings)
+
+    def test_a_blocked_unbacked_turn_does_not_seed_reconstructed_history(self) -> None:
+        turn0 = _envelope(
+            capture_id="cap_t0",
+            conversation_id="conv_1",
+            turn_index=0,
+            events=_claim_events(),
+        )
+        turn1 = _envelope(
+            capture_id="cap_t1",
+            conversation_id="conv_1",
+            turn_index=1,
+            events=[_model_call(0, model_input="And Globex?"), _final("Globex is PO-7.", 1)],
+        )
+
+        results = build_conversation_examples([_record(turn0), _record(turn1)], PromoteOptions())
+
+        (_, built0), (_, built1) = results
+        assert built0.blocked_reason == "unbacked_claim"
+        assert built1.blocked is None
+        history = built1.example.history or []
+        assert all("Acme" not in m.content for m in history)
+        assert all(m.content != _CLAIM_REPLY for m in history)
 
 
 def test_promote_preserves_tool_turns_in_history() -> None:
