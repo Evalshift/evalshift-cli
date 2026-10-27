@@ -77,9 +77,49 @@ def _tool(call_id: str, result: str) -> ChatMessage:
 _SEARCH = HistoryToolCall(id="c1", name="search_notes", arguments={"q": "PO"})
 
 
+#: A later turn that did call a tool: proof the app records tool rows in its history, so a
+#: turn without them really called nothing (see the tool-stripped history test).
+_BACKED_TURN = [
+    _user("Friday?"),
+    _assistant("", calls=[HistoryToolCall(id="c9", name="get_schedule", arguments={})]),
+    _tool("c9", "[]"),
+    _assistant("Friday is clear."),
+]
+
+
 def test_history_claim_without_a_tool_call_is_reported_by_position() -> None:
-    history = [_user("PO number?"), _assistant("Sorry, my notes search didn't find it.")]
+    history = [
+        _user("PO number?"),
+        _assistant("Sorry, my notes search didn't find it."),
+        *_BACKED_TURN,
+    ]
     assert unbacked_history_claims(history) == [(2, "my notes search didn't")]
+
+
+def test_tool_stripped_history_is_not_judged() -> None:
+    """With no tool row anywhere, the app may have dropped them when resending history:
+    backing is undecidable, and judging anyway would flag every past claim."""
+    history = [
+        _user("PO number?"),
+        _assistant("I searched your notes and found nothing."),
+        _user("Friday?"),
+        _assistant("I've checked your calendar: it's clear."),
+    ]
+    assert unbacked_history_claims(history) == []
+
+
+def test_a_claim_before_its_turns_tool_call_is_backed() -> None:
+    """Backing is per turn, not only backward: a reply that announces the search in the
+    past tense just before the recorded call is the same turn's action."""
+    history = [
+        _user("Am I free Friday?"),
+        _assistant("I searched your calendar."),
+        _assistant("", calls=[HistoryToolCall(id="c2", name="get_schedule", arguments={})]),
+        _tool("c2", "[]"),
+        _assistant("Friday is clear."),
+        _user("Thanks."),
+    ]
+    assert unbacked_history_claims(history) == []
 
 
 def test_history_claim_with_tool_call_in_its_turn_is_backed() -> None:
@@ -108,6 +148,7 @@ def test_unbacked_claims_in_different_turns_are_all_reported_in_order() -> None:
         _assistant("I searched your notes and found nothing."),
         _user("Friday?"),
         _assistant("I've checked your calendar: it's clear."),
+        *_BACKED_TURN,
     ]
     assert unbacked_history_claims(history) == [(2, "I searched"), (4, "I've checked")]
 

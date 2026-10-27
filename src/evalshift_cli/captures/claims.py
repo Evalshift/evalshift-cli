@@ -55,14 +55,18 @@ def find_tool_claim(text: str) -> str | None:
 def unbacked_history_claims(history: Sequence[ChatMessage]) -> list[tuple[int, str]]:
     """Find the assistant replies in a recorded history that claim a tool action never taken.
 
-    A reply is *backed* when a ``tool`` message or an ``assistant`` message with
-    ``tool_calls`` sits between it and the user turn it answers. A ``user`` message starts a
-    new turn, except one directly after a ``tool`` row: Claude delivers tool results inside
-    a user turn, and text riding in that same turn normalises to ``tool`` rows followed by a
-    ``user`` row -- still the answer to the call, not a fresh question.
+    Backing is decided per turn: a turn runs from one ``user`` message to the next, and every
+    reply in a turn that holds a ``tool`` message or an ``assistant`` message with
+    ``tool_calls`` -- before *or after* the reply -- is backed ("I searched your calendar."
+    then the call is still that turn's action). A ``user`` message directly after a ``tool``
+    row does not start a new turn: Claude delivers tool results inside a user turn, and text
+    riding in that same turn normalises to ``tool`` rows followed by a ``user`` row -- still
+    the answer to the call, not a fresh question.
 
-    Only meaningful for history recorded with its tool rows intact. History rebuilt from
-    earlier turns' text carries no tool rows, so every past reply would look unbacked.
+    Only history recorded with its tool rows intact can be judged. One with no ``tool`` row
+    and no ``tool_calls`` anywhere either never called a tool or had its tool rows stripped
+    when the app resent it (or was rebuilt from earlier turns' text) -- undecidable, and
+    judging it would flag every past claim -- so it yields nothing.
 
     Args:
         history: A case's recorded conversation prefix.
@@ -72,17 +76,25 @@ def unbacked_history_claims(history: Sequence[ChatMessage]) -> list[tuple[int, s
         1-based within ``history``; ``phrase`` is quoted from the reply by
         :func:`find_tool_claim`.
     """
-    claims: list[tuple[int, str]] = []
-    backed = False
+    # Pass 1: number each message's turn and note which turns acted.
+    turns: list[int] = []
+    backed_turns: set[int] = set()
+    turn = 0
     previous_role: str | None = None
-    for position, message in enumerate(history, start=1):
+    for message in history:
         if message.role == "user" and previous_role != "tool":
-            backed = False
+            turn += 1
         elif message.role == "tool" or (message.role == "assistant" and message.tool_calls):
-            backed = True
-        elif message.role == "assistant" and message.content and not backed:
+            backed_turns.add(turn)
+        turns.append(turn)
+        previous_role = message.role
+    if not backed_turns:
+        return []
+    # Pass 2: a claiming reply in a turn that never acted is unbacked.
+    claims: list[tuple[int, str]] = []
+    for position, (message, message_turn) in enumerate(zip(history, turns, strict=True), start=1):
+        if message.role == "assistant" and message.content and message_turn not in backed_turns:
             phrase = find_tool_claim(message.content)
             if phrase is not None:
                 claims.append((position, phrase))
-        previous_role = message.role
     return claims

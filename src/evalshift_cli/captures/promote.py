@@ -238,8 +238,9 @@ def build_example_from_capture(
     if loss is not None:
         warnings.append(loss)
     if recovered.history is not None:
-        # Recorded history only: it keeps its tool rows, so "backed" is decidable. History
-        # reconstructed from earlier turns is text-only and must never be scanned.
+        # Recorded history only: it can keep its tool rows, so "backed" is decidable (and the
+        # scan itself yields nothing for one that kept none). History reconstructed from
+        # earlier turns is text-only and must never be scanned.
         history_claims = _history_claims_warning(recovered.history)
         if history_claims is not None:
             warnings.append(history_claims)

@@ -826,6 +826,19 @@ def test_build_messages_list_model_role_coerced_to_assistant() -> None:
     assert built.example.history[1].content == "hello"
 
 
+#: A recorded history turn that did call a tool -- what tells the scan the app keeps tool rows.
+_BACKED_TURN: list[dict[str, Any]] = [
+    {"role": "user", "content": "Anything on Friday?"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "c9", "name": "search_notes", "arguments": {}}],
+    },
+    {"role": "tool", "tool_call_id": "c9", "content": "nothing"},
+    {"role": "assistant", "content": "Friday is clear."},
+]
+
+
 class TestUnbackedHistoryClaims:
     """A case whose *recorded* history carries a reply claiming a tool action it never
     took replays with that fabrication in context -- worth a warning, not a block: the
@@ -843,6 +856,7 @@ class TestUnbackedHistoryClaims:
         messages = [
             {"role": "user", "content": "PO number on the Acme contract?"},
             {"role": "assistant", "content": _CLAIM_REPLY},
+            *_BACKED_TURN,
             {"role": "user", "content": "Try the Globex one then."},
         ]
         events = [
@@ -859,6 +873,7 @@ class TestUnbackedHistoryClaims:
             {"role": "assistant", "content": _CLAIM_REPLY},
             {"role": "user", "content": "Friday?"},
             {"role": "assistant", "content": "I've checked your calendar: it's clear."},
+            *_BACKED_TURN,
             {"role": "user", "content": "Thanks."},
         ]
         events = [
@@ -872,6 +887,21 @@ class TestUnbackedHistoryClaims:
             '("my notes search didn\'t", "I\'ve checked") with no tool call in their '
             "turn — this case replays with those claims in context."
         ]
+
+    def test_tool_stripped_recorded_history_does_not_warn(self) -> None:
+        """No tool row anywhere: the app dropped them when resending, so a past claim
+        can't be judged and every one would warn."""
+        messages = [
+            {"role": "user", "content": "PO number on the Acme contract?"},
+            {"role": "assistant", "content": _CLAIM_REPLY},
+            {"role": "user", "content": "Try the Globex one then."},
+        ]
+        events = [
+            _messages_call(0, messages=messages, tools_offered=["search_notes"]),
+            _final("Globex is PO-7.", 1),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert not any("claim" in w for w in built.warnings)
 
     def test_a_claim_backed_by_a_recorded_call_does_not_warn(self) -> None:
         messages = [
