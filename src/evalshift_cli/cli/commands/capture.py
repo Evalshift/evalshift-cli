@@ -984,6 +984,16 @@ def capture_promote(
             ),
         ),
     ] = False,
+    allow_unbacked_claims: Annotated[
+        bool,
+        typer.Option(
+            "--allow-unbacked-claims",
+            help=(
+                "Promote even if the turn's reply claims a tool call it never made. "
+                "The case still never asserts expected_no_tools."
+            ),
+        ),
+    ] = False,
     force: Annotated[
         bool,
         typer.Option("--force", "-f", help="Overwrite an existing promoted case."),
@@ -1015,6 +1025,7 @@ def capture_promote(
         names_only=names_only,
         tool_count=tool_count,
         allow_errored=allow_errored,
+        allow_unbacked_claims=allow_unbacked_claims,
         rounds="all" if rounds == "all" else "first",
         tool_properties=_declared_tool_properties([envelope], base=base),
     )
@@ -1026,11 +1037,14 @@ def capture_promote(
     # error worth failing on rather than a line in a sync summary.
     if built.blocked is not None:
         console.print(f"[red]✗[/red] refusing to promote {envelope.capture_id!r}: {built.blocked}")
-        # Only an errored turn is rescuable by the flag -- a capture with no
-        # usable recorded toolset needs re-capturing (already spelled out in
-        # `built.blocked`), so pointing at --allow-errored there is a dead end.
+        # Each rescuable refusal names its own flag -- a capture with no usable
+        # recorded toolset needs re-capturing (already spelled out in
+        # `built.blocked`), and --allow-errored never rescues an unbacked claim,
+        # so pointing at it there is a dead end.
         if built.blocked_reason == "errored":
             console.print("Re-run with [bold]--allow-errored[/bold] to promote it anyway.")
+        elif built.blocked_reason == "unbacked_claim":
+            console.print("Re-run with [bold]--allow-unbacked-claims[/bold] to promote it anyway.")
         raise typer.Exit(code=1)
 
     if envelope.conversation_id is not None:

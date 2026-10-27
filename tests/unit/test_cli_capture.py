@@ -1415,6 +1415,72 @@ def test_promote_allow_errored_promotes_without_expected_no_tools(tmp_path: Path
     assert case.example.expected_no_tools is False
 
 
+_UNBACKED_REPLY = "I don't have that information—my notes search didn't find anything specific."
+
+
+def _unbacked_events(model_input: Any = "what did the dentist say?") -> list[dict[str, Any]]:
+    """A turn offered a tool that called none, yet whose reply claims it searched."""
+    return [
+        {
+            "type": "model_call",
+            "sequence_index": 0,
+            "timestamp": "2026-06-16T12:00:00+00:00",
+            "metadata": {},
+            "model_id": "m",
+            "input": model_input,
+            "output": "",
+            "toolset_ref": _TOOLSET_REF,
+            "tools_offered": ["search_orders"],
+        },
+        {
+            "type": "final_output",
+            "sequence_index": 1,
+            "timestamp": "2026-06-16T12:00:03+00:00",
+            "metadata": {},
+            "text": _UNBACKED_REPLY,
+        },
+    ]
+
+
+def test_promote_refuses_an_unbacked_claim(tmp_path: Path) -> None:
+    _write_capture(tmp_path, capture_id="cap_bad", suite="alpha", events=_unbacked_events())
+
+    result = _invoke(["promote", "cap_bad", "--as", "case_bad"], tmp_path)
+
+    assert result.exit_code == 1
+    flat = " ".join(result.stdout.split())
+    assert "claims a tool action" in flat
+    assert "Re-run with --allow-unbacked-claims to promote it anyway." in flat
+    # --allow-errored can never rescue this refusal, so it is never offered.
+    assert "--allow-errored" not in flat
+    assert not (tmp_path / "suites" / "alpha" / "case_bad.json").exists()
+
+
+def test_promote_allow_unbacked_claims_promotes_without_expected_no_tools(
+    tmp_path: Path,
+) -> None:
+    _write_capture(tmp_path, capture_id="cap_bad", suite="alpha", events=_unbacked_events())
+
+    result = _invoke(
+        ["promote", "cap_bad", "--as", "case_bad", "--allow-unbacked-claims"],
+        tmp_path,
+    )
+
+    assert result.exit_code == 0, result.stdout
+    case_path = tmp_path / "suites" / "alpha" / "case_bad.json"
+    case = PromotedCase.model_validate_json(case_path.read_text(encoding="utf-8"))
+    assert case.example.expected_no_tools is False
+
+
+def test_promote_allow_errored_does_not_rescue_an_unbacked_claim(tmp_path: Path) -> None:
+    _write_capture(tmp_path, capture_id="cap_bad", suite="alpha", events=_unbacked_events())
+
+    result = _invoke(["promote", "cap_bad", "--as", "case_bad", "--allow-errored"], tmp_path)
+
+    assert result.exit_code == 1
+    assert not (tmp_path / "suites" / "alpha" / "case_bad.json").exists()
+
+
 def test_sync_skips_errored_captures(tmp_path: Path) -> None:
     _write_capture(tmp_path, capture_id="cap_ok", suite="alpha")
     _write_capture(tmp_path, capture_id="cap_err", suite="alpha", events=_errored_events())
