@@ -1509,6 +1509,141 @@ def test_sync_allow_errored_promotes_them(tmp_path: Path) -> None:
     }
 
 
+_UNBACKED_SUMMARY = (
+    ", skipped 1 capture(s) whose reply claims a tool call it never made "
+    "(use --allow-unbacked-claims or captures.allow_unbacked_claims to promote anyway)"
+)
+
+
+def _unbacked_sync_fixture(tmp_path: Path, *, yaml_allow: bool | None = None) -> Path:
+    """``cap_ok`` plus the unbacked ``cap_bad`` in suite alpha; returns the config path."""
+    _write_capture(tmp_path, capture_id="cap_ok", suite="alpha")
+    _write_capture(tmp_path, capture_id="cap_bad", suite="alpha", events=_unbacked_events())
+    config = tmp_path / "evalshift.yaml"
+    _write_min_config(config)
+    if yaml_allow is not None:
+        value = "true" if yaml_allow else "false"
+        config.write_text(
+            config.read_text(encoding="utf-8") + f"\ncaptures:\n  allow_unbacked_claims: {value}\n",
+            encoding="utf-8",
+        )
+    return config
+
+
+def test_sync_skips_unbacked_claims(tmp_path: Path) -> None:
+    config = _unbacked_sync_fixture(tmp_path)
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    flat = " ".join(result.stdout.split())
+    assert "claims a tool action" in flat
+    assert _UNBACKED_SUMMARY in flat
+    assert load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").ids() == {"cap_ok"}
+
+
+def test_sync_allow_flag_promotes_them(tmp_path: Path) -> None:
+    config = _unbacked_sync_fixture(tmp_path)
+
+    result = _invoke(["sync", "--allow-unbacked-claims", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert "whose reply claims a tool call" not in result.stdout
+    golden = load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl")
+    assert golden.ids() == {"cap_bad", "cap_ok"}
+    case = PromotedCase.model_validate_json(
+        (tmp_path / "suites" / "alpha" / "cap_bad.json").read_text(encoding="utf-8")
+    )
+    assert case.example.expected_no_tools is False
+
+
+def test_sync_yaml_true_promotes_them(tmp_path: Path) -> None:
+    config = _unbacked_sync_fixture(tmp_path, yaml_allow=True)
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").ids() == {
+        "cap_bad",
+        "cap_ok",
+    }
+
+
+def test_sync_allow_flag_overrides_yaml_false(tmp_path: Path) -> None:
+    config = _unbacked_sync_fixture(tmp_path, yaml_allow=False)
+
+    result = _invoke(["sync", "--allow-unbacked-claims", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").ids() == {
+        "cap_bad",
+        "cap_ok",
+    }
+
+
+def test_sync_block_flag_overrides_yaml(tmp_path: Path) -> None:
+    config = _unbacked_sync_fixture(tmp_path, yaml_allow=True)
+
+    result = _invoke(["sync", "--block-unbacked-claims", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert _UNBACKED_SUMMARY in " ".join(result.stdout.split())
+    assert load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").ids() == {"cap_ok"}
+
+
+def test_sync_summary_does_not_offer_allow_errored_for_unbacked(tmp_path: Path) -> None:
+    """An unbacked claim used to fall into the errored counter, whose clause offers a flag
+    that cannot rescue it."""
+    config = _unbacked_sync_fixture(tmp_path)
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    flat = " ".join(result.stdout.split())
+    assert "errored capture(s)" not in flat
+    assert "--allow-errored" not in flat
+
+
+def test_sync_names_the_stale_case_of_a_now_blocked_capture(tmp_path: Path) -> None:
+    """A case promoted before the check existed (here: under the override) stays in the
+    suite; sync names its file instead of deleting it."""
+    config = _unbacked_sync_fixture(tmp_path)
+    promoted = _invoke(["promote", "cap_bad", "--allow-unbacked-claims"], tmp_path)
+    assert promoted.exit_code == 0, promoted.stdout
+    case_path = tmp_path / "suites" / "alpha" / "cap_bad.json"
+    assert case_path.exists()
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    flat = " ".join(result.stdout.split())
+    assert (
+        f" Its case is still in the suite from an earlier sync: delete {case_path} to drop it."
+    ) in flat
+    assert case_path.exists()
+    assert "cap_bad" in load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").ids()
+
+
+def test_sync_stale_case_hint_only_for_a_promoted_capture(tmp_path: Path) -> None:
+    config = _unbacked_sync_fixture(tmp_path)
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert "still in the suite" not in result.stdout
+
+
+def test_sync_unreadable_config_names_allow_unbacked_claims(tmp_path: Path) -> None:
+    config = tmp_path / "evalshift.yaml"
+    config.write_text("captures:\n  allow_unbacked_claim: true\n", encoding="utf-8")
+    _write_capture(tmp_path, capture_id="cap_bad", suite="alpha", events=_unbacked_events())
+
+    result = _invoke(["sync", "--offline", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    assert "captures.allow_unbacked_claims" in " ".join(result.stdout.split())
+
+
 def test_sync_skips_captures_with_no_toolset(tmp_path: Path) -> None:
     """capture sync's summary must count and describe a missing-toolset_ref
     refusal separately from an errored-capture refusal -- --allow-errored

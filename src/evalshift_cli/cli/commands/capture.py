@@ -602,6 +602,8 @@ class _SyncLimits:
     source_model: str | None = None
     #: ``captures.rounds``: not a limit, read here because sync reads its config here.
     rounds: Literal["first", "all"] = "first"
+    #: ``captures.allow_unbacked_claims``: not a limit either, read here for the same reason.
+    allow_unbacked_claims: bool = False
 
     @property
     def active(self) -> bool:
@@ -640,12 +642,14 @@ def _sync_limits(config_path: Path, *, console: Console, warn: bool) -> _SyncLim
             max_cases=cfg.captures.max_cases,
             source_model=cfg.defaults.source_model,
             rounds=cfg.captures.rounds,
+            allow_unbacked_claims=cfg.captures.allow_unbacked_claims,
         )
     if warn and _mentions_captures(config_path):
         console.print(
             f"[yellow]⚠[/yellow] could not read {escape(str(config_path))} ({escape(reason)}); "
-            "syncing without captures.max_age / captures.max_cases / captures.rounds "
-            "(replaying the first round only).",
+            "syncing without captures.max_age / captures.max_cases / captures.rounds / "
+            "captures.allow_unbacked_claims (replaying the first round only, blocking "
+            "unbacked tool claims).",
         )
     return _SyncLimits()
 
@@ -1450,6 +1454,18 @@ def capture_sync(
             ),
         ),
     ] = False,
+    allow_unbacked_claims: Annotated[
+        bool | None,
+        typer.Option(
+            "--allow-unbacked-claims/--block-unbacked-claims",
+            help=(
+                "Promote captures whose reply claims a tool call the turn never made, or "
+                "block them. Defaults to captures.allow_unbacked_claims in evalshift.yaml, "
+                "else block: such a turn records a hallucinated action, which is not "
+                "ground truth."
+            ),
+        ),
+    ] = None,
     config_path: _ConfigOption = Path(CONFIG_FILENAME),
     force: Annotated[
         bool,
@@ -1500,6 +1516,8 @@ def capture_sync(
     keeps older captures out of a suite. The fetch from captures.store takes
     only captures within captures.max_age and, with captures.max_cases set,
     at most 3x max_cases per suite, a conversation at a time, newest first.
+    A capture whose reply claims a tool call its turn never made is skipped
+    unless --allow-unbacked-claims or captures.allow_unbacked_claims allows it.
     """
     console = Console()
     if rounds is not None:
@@ -1507,6 +1525,9 @@ def capture_sync(
     limits = _sync_limits(config_path, console=console, warn=True)
     replay_rounds: Literal["first", "all"] = (
         limits.rounds if rounds is None else ("all" if rounds == "all" else "first")
+    )
+    allow_unbacked = (
+        limits.allow_unbacked_claims if allow_unbacked_claims is None else allow_unbacked_claims
     )
     now = _now()
     selection = _repair_selection(base=base, suite=suite, console=console)
@@ -1543,6 +1564,7 @@ def capture_sync(
         names_only=names_only,
         tool_count=tool_count,
         allow_errored=allow_errored,
+        allow_unbacked_claims=allow_unbacked,
         rounds=replay_rounds,
         tool_properties=_declared_tool_properties([r.envelope for r in records], base=base),
     )
@@ -1560,6 +1582,7 @@ def capture_sync(
     skipped_multi_toolset = 0
     skipped_unreplayable = 0
     skipped_invalid = 0
+    skipped_unbacked = 0
     repaired = 0
     left_for_repair = 0
     backfilled = 0
@@ -1715,6 +1738,9 @@ def capture_sync(
                 if key is not None:
                     seen_examples.setdefault((suite_name, key), case.name)
         repaired_here: list[str] = []
+        # capture id -> the case file promoted from it; built only once a capture in this
+        # suite is refused as an unbacked claim, so the common path never pays for it.
+        stale_case_paths: dict[str, Path] | None = None
         for record, built in built_pairs:
             envelope = record.envelope
             backed = backed_by.get(envelope.capture_id)
@@ -1771,17 +1797,30 @@ def capture_sync(
                             repaired_here.append(case.name)
                     continue
             if built.blocked is not None:
-                console.print(
+                skip_line = (
                     f"[yellow]⚠[/yellow] skipped [cyan]{envelope.capture_id}[/cyan]: "
-                    f"{built.blocked}",
+                    f"{built.blocked}"
                 )
+                if built.blocked_reason == "unbacked_claim":
+                    # A case an earlier sync (or an override) promoted stays in the suite:
+                    # sync never deletes a case file, so it names the file to delete.
+                    if stale_case_paths is None:
+                        stale_case_paths = {c.from_capture: path for path, c in kept}
+                    stale_path = stale_case_paths.get(envelope.capture_id)
+                    if stale_path is not None:
+                        skip_line += (
+                            " Its case is still in the suite from an earlier sync: "
+                            f"delete {escape(str(stale_path))} to drop it."
+                        )
+                console.print(skip_line, soft_wrap=True)
                 # Routed by *why* it was blocked, not lumped under one counter:
                 # --allow-errored rescues an errored turn but can never rescue
                 # a capture with no usable recorded toolset, one that switched
                 # toolsets mid-run, one whose messages carry content a text
-                # replay can't carry (unreplayable_content), or one no valid case
-                # can be built from (invalid_case), so the summary below must not
-                # offer that as a fix for any of them.
+                # replay can't carry (unreplayable_content), one no valid case
+                # can be built from (invalid_case), or one whose reply claims a
+                # tool call it never made (unbacked_claim), so the summary below
+                # must not offer that as a fix for any of them.
                 if built.blocked_reason == "no_toolset":
                     skipped_no_toolset += 1
                 elif built.blocked_reason == "multi_toolset":
@@ -1790,6 +1829,8 @@ def capture_sync(
                     skipped_unreplayable += 1
                 elif built.blocked_reason == "invalid_case":
                     skipped_invalid += 1
+                elif built.blocked_reason == "unbacked_claim":
+                    skipped_unbacked += 1
                 else:
                     skipped_errored += 1
                 continue
@@ -1987,6 +2028,12 @@ def capture_sync(
         summary += (
             f", skipped {skipped_errored} errored capture(s) "
             "(use --allow-errored to promote anyway)"
+        )
+    if skipped_unbacked:
+        summary += (
+            f", skipped {skipped_unbacked} capture(s) whose reply claims a tool call it never "
+            "made (use --allow-unbacked-claims or captures.allow_unbacked_claims to promote "
+            "anyway)"
         )
     if skipped_no_toolset:
         summary += (
