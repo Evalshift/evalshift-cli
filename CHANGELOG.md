@@ -16,9 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `capture promote` now exits 1 on it (`Re-run with --allow-unbacked-claims to
   promote it anyway.`), and `capture sync` skips it and counts it on its own
   (`skipped 1 capture(s) whose reply claims a tool call it never made`). The
-  check reads the reply's English wording (first-person phrasing such as "I
-  searched", "let me check", "my search returned"; a bare tool name never
-  fires) and never flags a turn that called or requested a tool.
+  check reads the reply's English wording — a first-person claim that the
+  action already happened, such as "I searched", "I've checked" or "my notes
+  search didn't"; a promise ("let me check", "I'll search your notes once you
+  confirm") or a bare tool name never fires — and never flags a turn with any
+  other sign it acted: a tool call or tool result, a requested tool call, a
+  retrieval event, or more than one model call.
   `capture promote --allow-unbacked-claims`, `capture sync
   --allow-unbacked-claims/--block-unbacked-claims` and
   `captures.allow_unbacked_claims` in `evalshift.yaml` (flag, then YAML, then
@@ -27,16 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is still reported as errored. Cases an earlier sync promoted stay in the
   suite: sync never deletes a case file, so its skip line names the file to
   delete (`Its case is still in the suite from an earlier sync: delete
-  .evalshift/suites/<suite>/<capture_id>.json to drop it.`). A refused turn
+  .evalshift/suites/<suite>/<capture_id>.json to drop it.`), unless the case
+  is marked `provenance: reviewed`. `capture sync --repair` refusing such a
+  case adds `Re-run with --allow-unbacked-claims to repair it anyway.` A refused turn
   also drops out of later turns' reconstructed history. `init` scaffolds the
   key commented out. Older CLIs reject the key, so update a CI
   `evalshift-version:` pin first.
 - Promotion warns when a case's recorded history carries an assistant reply
-  that claims a tool action with no tool call in its turn (`history message 2
-  (assistant) claims a tool action ("my notes search didn't") with no tool
-  call in its turn — this case replays with that claim in context.`). The
-  case is still promoted. History reconstructed from sibling turns is not
-  checked.
+  that claims a tool action with no tool call or tool result anywhere in its
+  turn (`history message 2 (assistant) claims a tool action ("my notes search
+  didn't") with no tool call in its turn — this case replays with that claim
+  in context.`). The case is still promoted. A recorded history with no tool
+  rows at all, and history reconstructed from sibling turns, are not checked.
 
 ## [1.6.2] - 2026-10-27
 

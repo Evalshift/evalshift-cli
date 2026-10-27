@@ -417,10 +417,14 @@ that. These shapes are actively filtered or flagged during promotion:
   offered tools, called none, and still replied "I don't have that
   information — my notes search didn't find anything" records an action that
   never happened. Promoted, the fabricated reply becomes `expected` and the
-  turn asserts `expected_no_tools: true`. The check reads the reply's wording
-  (English first-person action phrasing such as "I searched", "let me check",
-  "my search returned"; a bare tool name never fires), and a turn that called
-  or requested any tool is never flagged:
+  turn asserts `expected_no_tools: true`. The check reads the reply's wording:
+  an English first-person claim that the action already happened, such as "I
+  searched", "I've checked" or "my notes search didn't". A promise ("let me
+  check", "I'll search your notes once you confirm") never fires — a
+  clarifying question is a correct no-tool turn — nor does a bare tool name.
+  A turn with any other sign it acted is never flagged: a recorded tool call or
+  tool result, a requested tool call, a `retrieval` event, or more than one
+  model call (an agent loop):
 
   ```text
   ⚠ skipped cap_bad: turn was offered tools and called none, but its reply claims a tool action ("my notes search didn't") — promoting it would make a hallucinated action ground truth.
@@ -434,9 +438,11 @@ that. These shapes are actively filtered or flagged during promotion:
   refusal prints as a warning and the case never gets `expected_no_tools: true`.
   `--allow-errored` does not help here, and an errored turn is reported as
   errored. A case an earlier sync promoted stays in the suite — sync never
-  deletes a case file — and the skip line appends `Its case is still in the
-  suite from an earlier sync: delete .evalshift/suites/<suite>/<capture_id>.json
-  to drop it.`
+  deletes a case file — and, unless it is marked `provenance: reviewed`, the
+  skip line appends `Its case is still in the suite from an earlier sync:
+  delete .evalshift/suites/<suite>/<capture_id>.json to drop it.` Under
+  `--repair`, a case whose rebuild is refused this way prints `can't repair
+  <case>: … Re-run with --allow-unbacked-claims to repair it anyway.`
 - **Captures missing a recorded toolset are refused, unconditionally.** Every
   model call is required to record the toolset it was offered; a capture whose
   first `model_call` has no `toolset_ref` — the SDK failed to write the sidecar,

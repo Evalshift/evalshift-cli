@@ -435,7 +435,8 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   inputs rebuilds unchanged, so it is NOT a repair: sync treats it as an ordinary promoted
   case and --force refreshes it. A candidate whose capture is gone: "can't repair N case(s)".
   A stringified case whose rebuild is now blocked (e.g. an image): "can't repair <case>:
-  <blocked message>", left as is; an empty-inputs case whose rebuild is blocked is left as is
+  <blocked message>", left as is (an unbacked tool claim appends " Re-run with
+  --allow-unbacked-claims to repair it anyway.", and that flag lets the repair run); an empty-inputs case whose rebuild is blocked is left as is
   too but gets the ordinary "skipped <capture>: ..." line and skip count. A case's single
   input key is kept (promoted with --input-var question -> stays question; a case left with
   empty inputs takes this run's --input-var), every other field too; other promoted cases are
@@ -658,7 +659,8 @@ evalshift capture sync [--suite S] [--input-var NAME=input] [--tag T]... [--stri
   SKIPPED and counted on their own ("skipped N capture(s) whose reply claims a tool call it
   never made (use --allow-unbacked-claims or captures.allow_unbacked_claims to promote
   anyway)"); --allow-errored does not apply. A case already promoted from such a capture stays
-  (sync never deletes a case file); the skip line appends "Its case is still in the suite from
+  (sync never deletes a case file); unless that case is_reviewed (any expected tool call
+  provenance: reviewed), the skip line appends "Its case is still in the suite from
   an earlier sync: delete .evalshift/suites/<suite>/<capture_id>.json to drop it." (the path
   as built from --base).
   Warns on duplicate (conversation_id, turn_index) and on failed tool results.
@@ -1707,13 +1709,16 @@ content leaves the machine.
   counts it separately ("skipped N capture(s) that could not form a valid case
   (--allow-errored does not apply)") and exits 0; promote exits 1 without suggesting
   --allow-errored.
-- Promotion ALSO blocks an UNBACKED TOOL CLAIM: tools_offered non-empty, no tool_call event,
-  no model_call with requested_tool_calls, and the reply (last final_output, else last
-  non-empty model_call output) matches first-person action wording (English, regex in
-  captures/claims.py, [] optional: "I ['ve|have] [just|already] searched|checked|looked
-  up/through/in[to]|queried|pulled up|went through|scanned", "my|the [word] search|lookup|query
-  didn't|found|returned|came back|turned up|show(s|ed)", "let me check|search|look|pull up|find", "I'll check|search|look";
-  a bare tool name never fires). blocked_reason "unbacked_claim", blocked "turn was offered
+- Promotion ALSO blocks an UNBACKED TOOL CLAIM: tools_offered non-empty, no tool_call,
+  tool_result or retrieval event, exactly one model_call and it has no requested_tool_calls
+  (a second model_call means an agent loop ran, even in a pre-2.1.0 capture), and the reply
+  (last final_output with non-blank text, else last non-blank model_call output) matches
+  past-tense first-person claim wording (English, regex in captures/claims.py, [] optional:
+  "I ['ve|have] [just|already] searched|checked|looked up/through/in[to]|queried|pulled
+  up|went through|scanned", "my [word] search|lookup|query didn't|did not|found|returned|came
+  back|turned up|show(s|ed)"). Promises ("let me check", "I'll search") and "the search/query
+  ..." never fire; nor does a bare tool name. Known accepted false positive: "I checked the
+  code you pasted". blocked_reason "unbacked_claim", blocked "turn was offered
   tools and called none, but its reply claims a tool action ("<phrase>") — promoting it
   would make a hallucinated action ground truth." promote exits 1 with "Re-run with
   --allow-unbacked-claims to promote it anyway." (never --allow-errored); sync skips and
@@ -1723,9 +1728,11 @@ content leaves the machine.
   captures.allow_unbacked_claims > block) turns the refusal into a warning and the case never
   gets expected_no_tools: true.
 - Recorded history (the turn's own messages list, NEVER history reconstructed from sibling
-  turns, which has no tool rows) is scanned too: an assistant reply claiming a tool action with
-  no tool row or assistant tool_calls since the user message it answers WARNS (does not
-  block): "history message 2 (assistant) claims a tool action ("my notes search didn't")
+  turns, which has no tool rows) is scanned too, two-pass: history is split into turns (each
+  user message starts one), and an assistant reply claiming a tool action in a turn holding no
+  tool row and no assistant tool_calls -- before OR after the reply -- WARNS (does not
+  block). A recorded history with no tool row and no tool_calls anywhere (tool rows stripped by
+  the app when resending) is undecidable and never warns: "history message 2 (assistant) claims a tool action ("my notes search didn't")
   with no tool call in its turn — this case replays with that claim in context." (several ->
   "history messages 2, 4 (assistant) claim tool actions (...)"). A user row directly after a
   tool row does not start a new turn (Claude delivers tool results inside a user turn).

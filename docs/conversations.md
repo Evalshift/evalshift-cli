@@ -105,17 +105,21 @@ sibling's prefix. A turn promoted anyway (`--allow-errored`,
 
 Recovered history is checked for such claims too. When a turn's own messages
 list carries an assistant reply that claims a tool action with no tool call
-or tool result in its turn, promotion warns and still promotes — the current
-turn may be fine, but the candidate will answer with that claim in context:
+or tool result anywhere in its turn — from one user message to the next, so a
+reply that says "I searched your calendar." just before the call is backed —
+promotion warns and still promotes. The current turn may be fine, but the
+candidate will answer with that claim in context:
 
 ```text
 ⚠ history message 2 (assistant) claims a tool action ("my notes search didn't") with no tool call in its turn — this case replays with that claim in context.
 ```
 
 A `user` message directly after a `tool` message does not start a new turn:
-Claude delivers tool results inside a user turn. Reconstructed history is
-never checked — it carries no tool rows, so every earlier reply would look
-unbacked.
+Claude delivers tool results inside a user turn. A recorded history with no
+tool rows at all is not checked — the app may have stripped them when it
+resent the conversation, and then every earlier claim would look unbacked.
+Reconstructed history is never checked for the same reason: it carries no
+tool rows.
 
 With `captures.max_cases` set, a conversation's new turns enter a suite
 together when they fit; one larger than the suite's free slots is skipped
@@ -202,7 +206,9 @@ they are promoted and even past `--since`. A case whose capture is gone from
 both `.evalshift/captures/` and the store is named (`can't repair N case(s)`):
 delete it or re-capture. A case with stringified blocks whose rebuild is now
 refused — its turn carries an image, say — is named too
-(`can't repair <case>: …`) and left as it is; a case left with empty `inputs`
+(`can't repair <case>: …`) and left as it is — when the refusal is a reply
+claiming a tool call it never made, the line adds `Re-run with
+--allow-unbacked-claims to repair it anyway.`; a case left with empty `inputs`
 whose rebuild is refused is left as it is too, but reported like any other
 refused capture (`skipped <capture>: …`, counted in the summary). A turn
 whose capture recorded no messages list, or one with no user turn to split

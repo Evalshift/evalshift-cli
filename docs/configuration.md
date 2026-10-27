@@ -1118,13 +1118,16 @@ and ones promoted under another name (`capture promote --as`) are left out of th
 evalshift older than 1.6.0 rejects the key, so update a CI pin (`evalshift-version:`) before
 adding it.
 
-`allow_unbacked_claims` judges the reply's wording only: English first-person action phrasing
-(`I searched`, `I've checked`, `let me look`, `my search returned`), never a bare mention of a
-tool. A turn that recorded or requested any tool call is never flagged, and an errored turn is
-reported as errored. Sync never deletes a case file, so a case an earlier sync promoted from
-such a capture stays in the suite; the skip line names the file to delete (`Its case is still
-in the suite from an earlier sync: delete .evalshift/suites/<suite>/<capture_id>.json to drop
-it.`). A CLI released before the key rejects it; update a CI pin first.
+`allow_unbacked_claims` judges the reply's wording only: an English first-person claim that the
+action already happened (`I searched`, `I've checked`, `my notes search didn't`), never a
+promise (`let me check`, `I'll search your notes once you confirm` — a clarifying question is a
+correct no-tool turn) and never a bare mention of a tool. A turn with any other sign it acted is
+never flagged: a recorded tool call or tool result, a requested tool call, a `retrieval` event,
+or more than one model call (an agent loop). An errored turn is reported as errored. Sync never
+deletes a case file, so a case an earlier sync promoted from such a capture stays in the suite;
+unless that case is marked `provenance: reviewed`, the skip line names the file to delete (`Its
+case is still in the suite from an earlier sync: delete
+.evalshift/suites/<suite>/<capture_id>.json to drop it.`). A CLI released before the key rejects it; update a CI pin first.
 
 Setting either `max_age` or `max_cases` turns [bounded suites](#bounded-suites) on. Both work
 without `store`: they govern how captures become suites, whether the captures came from disk or

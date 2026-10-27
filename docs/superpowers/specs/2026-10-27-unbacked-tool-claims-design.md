@@ -2,6 +2,15 @@
 
 **Date:** 2026-10-27 · **Status:** decisions approved in chat, spec for maintainer review · **Repos:** evalshift-cli (behaviour + docs); evalshift-sdk, evalshift-action, evalshift-server (nothing)
 
+> **Amended after review (2026-10-28).** Review found false positives on exactly the turns
+> where calling no tool is correct. Changes, folded into the sections below: promises (`let me
+> …`, `I'll …`) and `the <x> search/query …` no longer count as claims (§1); a tool result, a
+> retrieval event or a second model call also backs a turn (§2); history backing is decided per
+> turn, forward as well as backward, and a recorded history with no tool rows at all is not
+> scanned (§3); a blank `final_output` falls back to the model-call text (§2); `--repair` names
+> `--allow-unbacked-claims` when it can't repair such a case, and the stale-case hint skips
+> reviewed cases (§5).
+
 ## Problem
 
 A captured turn can record a reply that *claims* a tool action the model never took. Found in
@@ -45,12 +54,18 @@ def find_tool_claim(text: str) -> str | None:
     """Return the first phrase in ``text`` that claims a tool action, else ``None``."""
 ```
 
-One compiled, case-insensitive regex over first-person action phrasing. Starting set, validated
-against testApp's three tool-free captures (1 true positive, 0 false positives):
+One compiled, case-insensitive regex over first-person claims that an action already happened.
+Validated against testApp's three tool-free captures (1 true positive, 0 false positives):
 
-- past action: `I('ve| have)? (just )?(searched|checked|looked (up|through|at|in)|queried|pulled up|went through|scanned)`
-- reported result: `(my|the) (<word> )?(search|lookup|query) (didn't|did not|found|returned|came back|turned up|shows?)`
-- promise with nothing behind it: `let me (check|search|look|pull up|find)`, `I'll (check|search|look)`
+- past action: `I('ve| have)? (just |already )?(searched|checked|looked (up|through|in|into)|queried|pulled up|went through|scanned)`
+- reported result: `my (<word> )?(search|lookup|query) (didn't|did not|found|returned|came back|turned up|shows?|showed)`
+
+*Amended:* the original set also matched promises (`let me (check|search|look|pull up|find)`,
+`I'll (check|search|look)`) and `the <x> search/query …`. Both were dropped: a promise is not a
+claim that an action happened, and "let me know the date and I'll check your calendar" is a
+clarifying question — a correct no-tool turn; "the query didn't include a WHERE clause" is about
+the user's query. Known residual false positive, accepted: past-tense review of pasted content
+("I checked the code you pasted") — the flag rescues it.
 
 Returns the matched phrase so messages can quote it. English only (non-goal below).
 
@@ -61,9 +76,14 @@ an errored turn keeps reporting as errored). It fires when all hold:
 
 - the first model call offered tools (`tools_offered` non-empty);
 - the turn recorded no `tool_call` events and no model call has `requested_tool_calls`;
+- *(amended)* the turn recorded no `tool_result` and no `retrieval` event (a RAG answer did
+  search), and only one model call — a second one happens only after something was fed back,
+  the only trace of an agent loop in a pre-2.1.0 capture with no `requested_tool_calls`;
 - `find_tool_claim(<turn's reply>)` matches, where the reply is the text
   `_turn_assistant_text` already selects (last `FinalOutputEvent`, else last non-empty
-  `ModelCallEvent.output`).
+  `ModelCallEvent.output`). *(Amended:* a blank final text falls back to the model-call text;
+  with nothing to fall back to, the blank final still counts — reconstruction is unchanged
+  there.)
 
 Message (exact wording settled in implementation):
 
@@ -81,6 +101,13 @@ recorded messages, which keep `tool_calls` / `tool` rows): for each assistant me
 and no `tool_calls`, it is *backed* if any `tool` message or assistant-with-`tool_calls` sits
 between it and the preceding user message. An unbacked one whose text matches `find_tool_claim`
 adds one aggregated warning:
+
+*Amended:* backing is per turn (one user message to the next, a user row right after a tool row
+not starting one), forward as well as backward — "I searched your calendar." followed by the
+call in the same turn is backed. Two passes: mark turns that hold a tool row or `tool_calls`,
+then scan. A recorded history with no tool row and no `tool_calls` anywhere is not scanned at
+all: the app may strip tool rows when it resends history, making backing undecidable.
+
 
 > history message 38 (assistant) claims a tool action ("my notes search didn't") with no tool
 > call in its turn — this case replays with that claim in context.
@@ -118,6 +145,11 @@ captures:
 - `capture promote`: `--allow-unbacked-claims` (plain bool, help text parallel to
   `--allow-errored`). On `blocked_reason == "unbacked_claim"`, print "Re-run with
   `--allow-unbacked-claims` to promote it anyway." (`capture.py:1032` pattern).
+- *(Amended)* `capture sync --repair`: a repair candidate whose rebuild is refused as
+  `unbacked_claim` prints `can't repair <case>: … Re-run with --allow-unbacked-claims to repair
+  it anyway.` (the flag unblocks the rebuild, so the repair runs). Without `--repair` it is
+  still counted in `left N case(s) for --repair`, as an errored rebuild is. The stale-case hint
+  below skips cases marked `provenance: reviewed`.
 - `capture sync` summary: new `skipped_unbacked` counter in the `blocked_reason` dispatch
   (`capture.py:1771`) and clause `skipped N capture(s) whose reply claims a tool call it never
   made (use --allow-unbacked-claims or captures.allow_unbacked_claims to promote anyway)`.
@@ -134,8 +166,9 @@ skip list), `docs/conversations.md` (later-turn history warning), `CHANGELOG.md`
 ## Tests (TDD, `tests/unit/`)
 
 - `test_captures_claims.py` (new): positives — "my notes search didn't find anything", "I
-  searched your notes", "I've checked your calendar", "Let me check your notes for that.";
-  negatives — "Per your notes from Aug 20…", "Your passport renewal is due by September 15",
+  searched your notes", "I've checked your calendar"; negatives — *(amended)* "Let me check
+  your notes for that.", "I'll look into it.", "The notes search returned no results.", "Per
+  your notes from Aug 20…", "Your passport renewal is due by September 15",
   "I can't search contract documents", "Would you like me to check?", "the search bar",
   empty string.
 - `test_captures_promote.py`: blocks with `"unbacked_claim"` on the turn-9 shape; not blocked
