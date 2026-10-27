@@ -1768,10 +1768,18 @@ def capture_sync(
                     for warning in built.warnings:
                         console.print(f"[yellow]⚠[/yellow] {envelope.capture_id}: {warning}")
                     if built.blocked is not None:
+                        # Unlike the other refusals, an unbacked claim is rescued by a sync
+                        # flag: with it the rebuild is no longer blocked and the repair runs.
+                        hint = (
+                            " Re-run with [bold]--allow-unbacked-claims[/bold] to repair it anyway."
+                            if built.blocked_reason == "unbacked_claim"
+                            else ""
+                        )
                         for case in to_repair:
                             console.print(
                                 f"[yellow]⚠[/yellow] can't repair "
-                                f"[cyan]{escape(case.name)}[/cyan]: {escape(built.blocked)}",
+                                f"[cyan]{escape(case.name)}[/cyan]: {escape(built.blocked)}"
+                                f"{hint}",
                             )
                     else:
                         # A turn whose own capture yields no history got it from its sibling
@@ -1803,9 +1811,12 @@ def capture_sync(
                 )
                 if built.blocked_reason == "unbacked_claim":
                     # A case an earlier sync (or an override) promoted stays in the suite:
-                    # sync never deletes a case file, so it names the file to delete.
+                    # sync never deletes a case file, so it names the file to delete --
+                    # unless a human already reviewed that case.
                     if stale_case_paths is None:
-                        stale_case_paths = {c.from_capture: path for path, c in kept}
+                        stale_case_paths = {
+                            c.from_capture: path for path, c in kept if not is_reviewed(c.example)
+                        }
                     stale_path = stale_case_paths.get(envelope.capture_id)
                     if stale_path is not None:
                         skip_line += (

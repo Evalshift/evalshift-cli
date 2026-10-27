@@ -1624,6 +1624,27 @@ def test_sync_names_the_stale_case_of_a_now_blocked_capture(tmp_path: Path) -> N
     assert "cap_bad" in load_jsonl(tmp_path / "suites" / "alpha" / "golden.jsonl").ids()
 
 
+def test_sync_stale_case_hint_leaves_out_a_reviewed_case(tmp_path: Path) -> None:
+    """A human already looked at a reviewed case (say, fixed it to expect the search), so
+    sync does not nag them to delete it."""
+    config = _unbacked_sync_fixture(tmp_path)
+    assert _invoke(["promote", "cap_bad", "--allow-unbacked-claims"], tmp_path).exit_code == 0
+    case_path = tmp_path / "suites" / "alpha" / "cap_bad.json"
+    case = json.loads(case_path.read_text(encoding="utf-8"))
+    case["example"]["expected_tools"] = [
+        {"tool_name": "search_orders", "provenance": "reviewed"},
+    ]
+    case_path.write_text(json.dumps(case), encoding="utf-8")
+
+    result = _invoke(["sync", "--config", str(config)], tmp_path)
+
+    assert result.exit_code == 0, result.stdout
+    flat = " ".join(result.stdout.split())
+    assert "skipped cap_bad" in flat
+    assert "still in the suite" not in flat
+    assert case_path.exists()
+
+
 def test_sync_stale_case_hint_only_for_a_promoted_capture(tmp_path: Path) -> None:
     config = _unbacked_sync_fixture(tmp_path)
 
