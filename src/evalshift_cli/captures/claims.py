@@ -3,8 +3,18 @@
 A captured turn that was offered tools, called none, and still says "my notes search didn't
 find anything" records an action that never happened. Promoting it would make that
 hallucination ground truth (``expected_no_tools: true`` plus the fabricated reply). The check is
-wording only — deterministic, offline, English — and deliberately narrow: first-person action
-phrasing, never a bare mention of a tool or a noun like "search bar".
+wording only — deterministic, offline, English — and deliberately narrow: a first-person claim
+that an action already *happened* ("I searched", "I've checked", "my notes search didn't …"),
+never a bare mention of a tool or a noun like "search bar".
+
+Promises are not claims: "let me check" or "I'll search your notes once you confirm" is how a
+model asks a clarifying question before acting -- exactly the turn where calling no tool is
+right. A reported result counts only as *my* search/lookup/query: "the query didn't include a
+WHERE clause" is about the user's query as often as the model's.
+
+Known false positive, accepted: past-tense review of content the user pasted ("I checked the
+code you pasted") reads exactly like a claimed lookup. The refusal quotes the phrase and
+``--allow-unbacked-claims`` rescues the turn.
 """
 
 from __future__ import annotations
@@ -21,10 +31,8 @@ _CLAIM = re.compile(
         I(?:{_APOS}ve|\s+have)?\s+(?:just\s+|already\s+)?
             (?:searched|checked|looked\s+(?:up|through|in(?:to)?)|queried|pulled\s+up
               |went\s+through|scanned)
-      | (?:my|the)\s+(?:\w+\s+)?(?:search|lookup|query)\s+
+      | my\s+(?:\w+\s+)?(?:search|lookup|query)\s+
             (?:didn{_APOS}t|did\s+not|found|returned|came\s+back|turned\s+up|shows?|showed)
-      | let\s+me\s+(?:check|search|look|pull\s+up|find)
-      | I{_APOS}ll\s+(?:check|search|look)
     )\b""",
     re.IGNORECASE | re.VERBOSE,
 )

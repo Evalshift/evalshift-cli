@@ -18,10 +18,11 @@ from evalshift_cli.suite.models import ChatMessage, HistoryToolCall
         ("I searched your notes and found nothing.", "I searched"),
         ("I've checked your calendar for Friday.", "I've checked"),
         ("I’ve already looked through your tasks.", "I’ve already looked through"),  # noqa: RUF001 — curly apostrophe
-        ("Let me check your notes for that.", "Let me check"),
-        ("I'll look into it.", "I'll look"),
-        ("The notes search returned no results.", "The notes search returned"),
         ("My search didn’t turn up anything.", "My search didn’t"),  # noqa: RUF001 — curly apostrophe
+        # Known, accepted false positive: past-tense review of content the user pasted reads
+        # exactly like a claimed lookup. Wording alone can't tell them apart; the turn is
+        # rescuable with --allow-unbacked-claims, and the refusal quotes the phrase.
+        ("I checked the code you pasted and it looks fine.", "I checked"),
     ],
 )
 def test_claims_are_found_and_quoted(text: str, phrase: str) -> None:
@@ -39,6 +40,21 @@ def test_claims_are_found_and_quoted(text: str, phrase: str) -> None:
         "Let me know if you need anything else.",
         "I looked at your question again: Friday is clear.",
         "Checked items are done.",
+        # A promise is not a claim that an action happened -- and a clarifying question
+        # before acting is exactly the turn where calling no tool is correct.
+        "Let me check your notes for that.",
+        "I'll look into it.",
+        "Let me know the date and I'll check your calendar.",
+        "Once you confirm the project name, I'll search your notes.",
+        "Sure — let me find a time that works. What duration do you need?",
+        "Let me check I understand: you want the Friday slot moved?",
+        "I'll look forward to it!",
+        "Let me check: 2+2=4.",
+        # Only *my* search reports a result the reply claims for itself; "the" search/query
+        # is as often the user's or a piece of code under discussion.
+        "The notes search returned no results.",
+        "The query didn't include a WHERE clause.",
+        "The search didn't match because the term is misspelled.",
         "",
     ],
 )
@@ -91,9 +107,9 @@ def test_unbacked_claims_in_different_turns_are_all_reported_in_order() -> None:
         _user("PO number?"),
         _assistant("I searched your notes and found nothing."),
         _user("Friday?"),
-        _assistant("Let me check your calendar."),
+        _assistant("I've checked your calendar: it's clear."),
     ]
-    assert unbacked_history_claims(history) == [(2, "I searched"), (4, "Let me check")]
+    assert unbacked_history_claims(history) == [(2, "I searched"), (4, "I've checked")]
 
 
 def test_a_new_user_turn_resets_backing() -> None:
