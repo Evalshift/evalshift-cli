@@ -47,6 +47,7 @@ from evalshift_cli.traces.models import (
     FinalOutputEvent,
     ModelCallEvent,
     RequestedToolCall,
+    RetrievalEvent,
     ToolCallEvent,
     ToolResultEvent,
 )
@@ -1408,9 +1409,13 @@ def _reply_text(events: list[Any]) -> str | None:
 def _unbacked_claim(events: list[Any], tools_offered: Sequence[str] | None) -> str | None:
     """The phrase a tool-free turn's reply uses to claim a tool action, if any.
 
-    Fires only when the turn could have acted and didn't: tools were offered,
-    no ``tool_call`` event was recorded, and no model call requested one. A turn
-    that did call a tool is never flagged, however its reply is worded.
+    Fires only when the turn could have acted and shows no sign it did: tools were
+    offered, and the turn recorded no ``tool_call`` or ``tool_result`` event, no
+    ``retrieval`` event (a RAG answer did search), no model call requesting a tool,
+    and only one model call -- a second one happens only after something was fed
+    back, which is the only trace of an agent loop in a pre-2.1.0 capture with no
+    ``requested_tool_calls``. A turn with any of that evidence is never flagged,
+    however its reply is worded.
 
     Returns:
         The matched phrase (see :func:`~evalshift_cli.captures.claims.find_tool_claim`),
@@ -1418,9 +1423,10 @@ def _unbacked_claim(events: list[Any], tools_offered: Sequence[str] | None) -> s
     """
     if not tools_offered:
         return None
-    if any(isinstance(e, ToolCallEvent) for e in events):
+    if any(isinstance(e, ToolCallEvent | ToolResultEvent | RetrievalEvent) for e in events):
         return None
-    if any(isinstance(e, ModelCallEvent) and e.requested_tool_calls for e in events):
+    model_calls = [e for e in events if isinstance(e, ModelCallEvent)]
+    if len(model_calls) > 1 or any(call.requested_tool_calls for call in model_calls):
         return None
     return find_tool_claim(_reply_text(events) or "")
 

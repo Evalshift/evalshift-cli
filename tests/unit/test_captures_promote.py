@@ -614,6 +614,46 @@ class TestUnbackedClaim:
         built = build_example_from_capture(_envelope(events=events), PromoteOptions())
         assert built.blocked is None
 
+    def test_a_claim_backed_by_a_tool_result_is_not_blocked(self) -> None:
+        """A recorded tool result means a tool ran, even when the app logged no
+        ``tool_call`` event and the model call carries no ``requested_tool_calls``."""
+        events = [
+            _claim_events()[0],
+            _tool_result("search_orders", 1, result="nothing"),
+            _final(_CLAIM_REPLY, 2),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+
+    def test_a_claim_backed_by_retrieval_is_not_blocked(self) -> None:
+        """A RAG turn searched its notes through retrieval, not a tool: the claim is true."""
+        events = [
+            _claim_events()[0],
+            {
+                "type": "retrieval",
+                "sequence_index": 1,
+                "timestamp": "2026-06-16T12:00:01+00:00",
+                "metadata": {},
+                "source": "notes",
+                "query": "Acme PO",
+                "documents": [],
+            },
+            _final(_CLAIM_REPLY, 2),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+
+    def test_an_agent_loop_is_not_blocked(self) -> None:
+        """A second model call only happens after something was fed back -- a pre-2.1.0
+        capture records no ``requested_tool_calls``, so the loop is the only trace of it."""
+        events = [
+            _claim_events()[0],
+            _model_call(1, model_input="PO number on the Acme contract?", output=_CLAIM_REPLY),
+            _final(_CLAIM_REPLY, 2),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+
     def test_no_tools_offered_is_not_blocked(self) -> None:
         """With nothing offered the turn could not have called a tool, so the check
         has no "should have" to measure -- leave it to the reviewer."""
