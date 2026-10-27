@@ -182,11 +182,14 @@ CAPTURES_SCAFFOLD: Final = """\
 # store: and name the same bucket. Does the agent answer after calling a
 # tool? rounds: all replays each recorded round, so that answer is scored too
 # (about twice the calls); the default replays the first model call only.
+# A turn whose reply claims a tool call it never made is skipped;
+# allow_unbacked_claims: true promotes it anyway.
 captures:
   max_age: 14d
   max_cases: 200
   # store: s3://<bucket>/<prefix>
   # rounds: all
+  # allow_unbacked_claims: true
 """
 
 
