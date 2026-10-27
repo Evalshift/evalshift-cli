@@ -677,6 +677,15 @@ class TestUnbackedClaim:
         built = build_example_from_capture(_envelope(events=events), PromoteOptions())
         assert built.blocked_reason == "unbacked_claim"
 
+    @pytest.mark.parametrize("final_text", ["", "  \n"])
+    def test_an_empty_final_event_falls_back_to_the_model_call_output(
+        self, final_text: str
+    ) -> None:
+        """An empty ``final_output`` is no reply: the model call's text is what was said."""
+        events = [_model_call(0, model_input="q", output=_CLAIM_REPLY), _final(final_text, 1)]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked_reason == "unbacked_claim"
+
     def test_errored_wins_over_unbacked_claim(self) -> None:
         """An errored turn keeps reporting as errored -- the failure is the root cause,
         and ``--allow-errored`` is the hint the operator needs."""
@@ -909,6 +918,56 @@ class TestUnbackedHistoryClaims:
         assert built1.example.history[1].content == "I checked your calendar: Friday is clear."
         assert built1.blocked is None
         assert not any("claim" in w for w in built1.warnings)
+
+    def test_reconstructed_history_skips_an_empty_final_event(self) -> None:
+        """Same reply rule as the claim check: an empty ``final_output`` falls back to the
+        model call's text rather than replaying an empty assistant message."""
+        turn0 = _envelope(
+            capture_id="cap_t0",
+            conversation_id="conv_1",
+            turn_index=0,
+            events=[
+                _model_call(0, model_input="Am I free Friday?", output="Friday is clear."),
+                _final("", 1),
+            ],
+        )
+        turn1 = _envelope(
+            capture_id="cap_t1",
+            conversation_id="conv_1",
+            turn_index=1,
+            events=[_model_call(0, model_input="And Saturday?"), _final("Also clear.", 1)],
+        )
+
+        results = build_conversation_examples([_record(turn0), _record(turn1)], PromoteOptions())
+
+        _, built1 = results[1]
+        assert built1.example.history is not None
+        assert built1.example.history[1].content == "Friday is clear."
+
+    def test_reconstructed_history_keeps_an_empty_final_with_nothing_to_fall_back_to(
+        self,
+    ) -> None:
+        """With no model-call text either, the empty reply is still the turn's reply."""
+        turn0 = _envelope(
+            capture_id="cap_t0",
+            conversation_id="conv_1",
+            turn_index=0,
+            events=[_model_call(0, model_input="Am I free Friday?", output=""), _final("", 1)],
+        )
+        turn1 = _envelope(
+            capture_id="cap_t1",
+            conversation_id="conv_1",
+            turn_index=1,
+            events=[_model_call(0, model_input="And Saturday?"), _final("Also clear.", 1)],
+        )
+
+        results = build_conversation_examples([_record(turn0), _record(turn1)], PromoteOptions())
+
+        _, built1 = results[1]
+        assert [(m.role, m.content) for m in built1.example.history or []] == [
+            ("user", "Am I free Friday?"),
+            ("assistant", ""),
+        ]
 
     def test_a_blocked_unbacked_turn_does_not_seed_reconstructed_history(self) -> None:
         turn0 = _envelope(

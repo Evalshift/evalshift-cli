@@ -1385,8 +1385,7 @@ def _turn_current_text(built: BuiltExample, opts: PromoteOptions) -> str:
 def _turn_assistant_text(record: CaptureRecord) -> str | None:
     """The text a reconstructed history entry should use for a prior turn's reply.
 
-    Prefers the last :class:`FinalOutputEvent`; falls back to the last
-    non-empty :class:`ModelCallEvent` output. ``None`` when neither exists.
+    See :func:`_reply_text`.
     """
     return _reply_text(record.envelope.trace.events)
 
@@ -1394,15 +1393,23 @@ def _turn_assistant_text(record: CaptureRecord) -> str | None:
 def _reply_text(events: list[Any]) -> str | None:
     """The text a turn replied with.
 
-    Prefers the last :class:`FinalOutputEvent`; falls back to the last
-    non-empty :class:`ModelCallEvent` output. ``None`` when neither exists.
+    Prefers the last :class:`FinalOutputEvent` with non-blank text; falls back to
+    the last non-blank :class:`ModelCallEvent` output. A blank final event with
+    nothing to fall back to still counts as the (empty) reply. ``None`` when the
+    turn has neither.
     """
     finals = [e for e in events if isinstance(e, FinalOutputEvent)]
-    if finals:
+    if finals and finals[-1].text.strip():
         return finals[-1].text
-    model_calls = [e for e in events if isinstance(e, ModelCallEvent) and _nonempty_text(e.output)]
+    model_calls = [
+        e
+        for e in events
+        if isinstance(e, ModelCallEvent) and isinstance(e.output, str) and e.output.strip()
+    ]
     if model_calls:
         return str(model_calls[-1].output)
+    if finals:
+        return finals[-1].text
     return None
 
 
