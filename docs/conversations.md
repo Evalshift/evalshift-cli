@@ -96,6 +96,27 @@ exchanges are absent), and the system prompt is only recovered when at least
 one turn in the conversation recorded a full messages list. Prefer the
 messages-list convention above when you can.
 
+A turn that is not promoted — refused for any reason: an `error` event, no
+recorded toolset, content a text replay can't carry, a reply claiming a tool
+call it never made — also drops out of later turns' reconstructed history, so
+a fabricated "my notes search didn't find anything" is never stitched into a
+sibling's prefix. A turn promoted anyway (`--allow-errored`,
+`--allow-unbacked-claims`) does seed it.
+
+Recovered history is checked for such claims too. When a turn's own messages
+list carries an assistant reply that claims a tool action with no tool call
+or tool result in its turn, promotion warns and still promotes — the current
+turn may be fine, but the candidate will answer with that claim in context:
+
+```text
+⚠ history message 2 (assistant) claims a tool action ("my notes search didn't") with no tool call in its turn — this case replays with that claim in context.
+```
+
+A `user` message directly after a `tool` message does not start a new turn:
+Claude delivers tool results inside a user turn. Reconstructed history is
+never checked — it carries no tool rows, so every earlier reply would look
+unbacked.
+
 With `captures.max_cases` set, a conversation's new turns enter a suite
 together when they fit; one larger than the suite's free slots is skipped
 for the next one. Once no whole conversation fits, the slots left take the

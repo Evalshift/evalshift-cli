@@ -404,7 +404,7 @@ truth.
 ## What does not belong in a golden suite
 
 Ground truth is what the agent *did right*, and a capture is not automatically
-that. Three shapes are actively filtered or flagged during promotion:
+that. These shapes are actively filtered or flagged during promotion:
 
 - **Errored turns are refused.** A capture whose trace carries an `error` event
   died before the agent finished — an upstream 400, a timeout, a crash. Promoted
@@ -413,6 +413,30 @@ that. Three shapes are actively filtered or flagged during promotion:
   `capture sync` skips it, both naming the first error. `--allow-errored`
   promotes it anyway; even then the case never gets `expected_no_tools: true`,
   because a turn that never ran is not evidence that inaction was right.
+- **Turns that claim a tool call they never made are refused.** A turn that was
+  offered tools, called none, and still replied "I don't have that
+  information — my notes search didn't find anything" records an action that
+  never happened. Promoted, the fabricated reply becomes `expected` and the
+  turn asserts `expected_no_tools: true`. The check reads the reply's wording
+  (English first-person action phrasing such as "I searched", "let me check",
+  "my search returned"; a bare tool name never fires), and a turn that called
+  or requested any tool is never flagged:
+
+  ```text
+  ⚠ skipped cap_bad: turn was offered tools and called none, but its reply claims a tool action ("my notes search didn't") — promoting it would make a hallucinated action ground truth.
+  ✓ promoted 1 capture(s) into 1 suite(s), skipped 1 capture(s) whose reply claims a tool call it never made (use --allow-unbacked-claims or captures.allow_unbacked_claims to promote anyway).
+  ```
+
+  `capture promote` exits non-zero with `Re-run with --allow-unbacked-claims to
+  promote it anyway.` For `capture sync`, `--allow-unbacked-claims` or
+  [`captures.allow_unbacked_claims: true`](configuration.md#captures) promotes
+  such turns (`--block-unbacked-claims` overrides the YAML for one run); the
+  refusal prints as a warning and the case never gets `expected_no_tools: true`.
+  `--allow-errored` does not help here, and an errored turn is reported as
+  errored. A case an earlier sync promoted stays in the suite — sync never
+  deletes a case file — and the skip line appends `Its case is still in the
+  suite from an earlier sync: delete .evalshift/suites/<suite>/<capture_id>.json
+  to drop it.`
 - **Captures missing a recorded toolset are refused, unconditionally.** Every
   model call is required to record the toolset it was offered; a capture whose
   first `model_call` has no `toolset_ref` — the SDK failed to write the sidecar,

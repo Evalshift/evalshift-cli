@@ -1096,6 +1096,7 @@ captures:
   max_age: 14d       # optional: see Bounded suites below
   max_cases: 200     # optional, per suite
   rounds: all        # optional: replay every recorded round, not just the first call
+  allow_unbacked_claims: true  # optional: promote turns that claim a tool call they never made
 ```
 
 | Field       | Type                              | Default | Description |
@@ -1104,6 +1105,7 @@ captures:
 | `max_age`   | duration (`30m`, `24h`, `14d`; > 0, ≤ `36500d`) | (none)  | Captures recorded longer ago than this never enter a suite through `capture sync` (`capture promote` ignores the limits), and promoted cases that old are stale: with `max_cases` also set, `capture sync` replaces them as fresh captures arrive. Also the window `capture sync` and `capture list` fetch from `store`. Omit for no age limit. |
 | `max_cases` | int (≥ 1)                         | (none)  | The most cases `capture sync` keeps in each captured suite. Also caps what `capture sync` and `capture list` download from `store`: at most `3 × max_cases` captures per suite per run, a conversation at a time. Omit and suites grow with every sync. |
 | `rounds`    | `first` \| `all`                  | `first` | How many recorded agent rounds a case `capture sync` promotes is replayed over. `first` replays the first model call single-shot: a turn that answers after a tool call is scored on that call alone, so `semantic` and `llm_judge` see no answer text. `all` replays every recorded round [teacher-forced](agents.md#agent-rounds-and-what-a-replay-can-reproduce), feeding back the recorded tool results, through the answer round; it costs about one call per round. `capture sync --rounds` overrides it for one run; `capture promote` takes only the flag. |
+| `allow_unbacked_claims` | bool                         | `false` | Whether `capture sync` promotes a turn that was offered tools, called none, and still replied as if it had (`my notes search didn't find anything`). Off, it skips such a turn: promoting it would make a hallucinated action ground truth, with `expected_no_tools: true`. On, the turn is promoted with a warning and never asserts `expected_no_tools`. `capture sync --allow-unbacked-claims` / `--block-unbacked-claims` override it for one run; `capture promote` takes only `--allow-unbacked-claims`. `--allow-errored` does not apply. |
 
 `rounds` applies to the cases `capture sync` promotes from then on: sync never rewrites a promoted
 case unasked. When `rounds` is `all` and promoted cases still replay one round although their
@@ -1115,6 +1117,14 @@ its capture, which drops hand edits and `provenance: reviewed` marks. Reviewed c
 and ones promoted under another name (`capture promote --as`) are left out of the count. An
 evalshift older than 1.6.0 rejects the key, so update a CI pin (`evalshift-version:`) before
 adding it.
+
+`allow_unbacked_claims` judges the reply's wording only: English first-person action phrasing
+(`I searched`, `I've checked`, `let me look`, `my search returned`), never a bare mention of a
+tool. A turn that recorded or requested any tool call is never flagged, and an errored turn is
+reported as errored. Sync never deletes a case file, so a case an earlier sync promoted from
+such a capture stays in the suite; the skip line names the file to delete (`Its case is still
+in the suite from an earlier sync: delete .evalshift/suites/<suite>/<capture_id>.json to drop
+it.`). A CLI released before the key rejects it; update a CI pin first.
 
 Setting either `max_age` or `max_cases` turns [bounded suites](#bounded-suites) on. Both work
 without `store`: they govern how captures become suites, whether the captures came from disk or
@@ -1456,8 +1466,9 @@ paired statistics (`--keep-duplicates` opts out). The dedup set is seeded
 from the cases already in the suite dir, so re-syncing after recording more
 captures can't slip a duplicate past it. Captures whose messages carry an
 image or other non-text content are skipped too (see
-[Provider message shapes](conversations.md#provider-message-shapes)), as is
-a capture no valid case can be built from, and
+[Provider message shapes](conversations.md#provider-message-shapes)), as are
+a capture no valid case can be built from and one whose reply claims a tool
+call it never made (see [`captures.allow_unbacked_claims`](#captures)), and
 `--repair` rebuilds cases an earlier sync built from stringified message
 blocks. Useful flags: `--input-var`
 (default `input`), `--suite <name>` to filter to one suite, `--tag`,
