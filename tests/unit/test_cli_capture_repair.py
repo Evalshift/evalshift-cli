@@ -362,6 +362,61 @@ def test_repair_leaves_a_case_whose_rebuild_is_blocked(
     assert case.read_bytes() == before
 
 
+def _put_unbacked(store: FakeRemoteStore, capture_id: str) -> None:
+    """``_put``, but the turn was offered a tool, called none, and claims it searched."""
+    _put(store, capture_id)
+    key = f"captures/alpha/{capture_id}.json"
+    payload = json.loads(store.objects[key])
+    model_call, final = payload["trace"]["events"]
+    model_call["tools_offered"] = ["search"]
+    final["text"] = "My search didn't turn up a price."
+    store.objects[key] = json.dumps(payload).encode("utf-8")
+
+
+def test_repair_of_an_unbacked_claim_names_the_flag_that_allows_it(
+    tmp_path: Path, store: FakeRemoteStore
+) -> None:
+    case = _write_case(tmp_path, "cap_1")
+    before = case.read_bytes()
+    _put_unbacked(store, "cap_1")
+    result = _sync(tmp_path, "--repair")
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert "can't repair cap_1: turn was offered tools and called none" in out
+    assert "Re-run with --allow-unbacked-claims to repair it anyway." in out
+    assert case.read_bytes() == before
+
+
+def test_repair_of_an_unbacked_claim_proceeds_with_the_flag(
+    tmp_path: Path, store: FakeRemoteStore
+) -> None:
+    case = _write_case(tmp_path, "cap_1")
+    _put_unbacked(store, "cap_1")
+    result = _sync(tmp_path, "--repair", "--allow-unbacked-claims")
+    assert result.exit_code == 0, result.output
+    assert "repaired 1 case(s)" in _out(result)
+    assert _stored(case).example.history is not None
+    assert [m.role for m in _stored(case).example.history or []] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+
+
+def test_another_refused_rebuild_gets_no_unbacked_claims_hint(
+    tmp_path: Path, store: FakeRemoteStore
+) -> None:
+    """The hint is for unbacked claims only; other refusals keep their message as is."""
+    _write_case(tmp_path, "cap_1")
+    _put(store, "cap_1")
+    del store.objects[TOOLSET_KEY]  # refused as no_toolset
+    result = _sync(tmp_path, "--repair")
+    assert "can't repair cap_1:" in _out(result)
+    assert "--allow-unbacked-claims" not in _out(result)
+
+
 def test_repair_survives_a_corrupt_case_file_elsewhere(
     tmp_path: Path, store: FakeRemoteStore
 ) -> None:

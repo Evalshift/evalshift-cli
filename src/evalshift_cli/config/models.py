@@ -875,12 +875,18 @@ class CapturesConfig(_StrictModel):
             ``capture sync --rounds`` overrides it for one sync. It applies to cases promoted
             from then on: ``capture sync --force`` rebuilds the existing ones whose capture is
             local, dropping hand edits and ``provenance: reviewed`` marks.
+        allow_unbacked_claims: Promote turns whose reply claims a tool call the model never
+            made (offered tools, called none, says it searched). Off by default: such a turn
+            records a hallucinated action, which is not ground truth.
+            ``capture sync --allow-unbacked-claims`` / ``--block-unbacked-claims`` override it
+            for one sync.
     """
 
     store: str | None = None
     max_age: Annotated[timedelta | None, BeforeValidator(_duration_from_yaml)] = None
     max_cases: int | None = Field(default=None, ge=1)
     rounds: Literal["first", "all"] = "first"
+    allow_unbacked_claims: bool = False
 
     @field_validator("max_age")
     @classmethod

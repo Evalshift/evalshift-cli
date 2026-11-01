@@ -30,6 +30,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from evalshift_cli.captures.claims import find_tool_claim, unbacked_history_claims
 from evalshift_cli.captures.models import CaptureEnvelope, PromotedCase
 from evalshift_cli.captures.native_messages import normalize_messages
 from evalshift_cli.captures.reader import CaptureRecord, suites_root, toolset_path
@@ -46,6 +47,7 @@ from evalshift_cli.traces.models import (
     FinalOutputEvent,
     ModelCallEvent,
     RequestedToolCall,
+    RetrievalEvent,
     ToolCallEvent,
     ToolResultEvent,
 )
@@ -62,7 +64,12 @@ _CONTEXT_LOSS_MIN_GAP_TOKENS = 300
 
 #: Why :func:`build_example_from_capture` refused a capture -- see :class:`BuiltExample`.
 BlockedReason = Literal[
-    "errored", "no_toolset", "multi_toolset", "unreplayable_content", "invalid_case"
+    "errored",
+    "no_toolset",
+    "multi_toolset",
+    "unreplayable_content",
+    "invalid_case",
+    "unbacked_claim",
 ]
 
 
@@ -83,6 +90,12 @@ class PromoteOptions:
             event anyway. The case is still never given
             ``expected_no_tools=True`` — a failed turn is not evidence that
             calling nothing was correct.
+        allow_unbacked_claims: Promote a capture whose turn was offered tools,
+            called none, and still replied as if it had (see
+            :func:`~evalshift_cli.captures.claims.find_tool_claim`) anyway. The
+            refusal becomes a warning, and the case is still never given
+            ``expected_no_tools=True`` -- a turn that claimed a search is not
+            evidence that calling nothing was correct.
         rounds: How many recorded agent rounds the case is replayed over.
             ``first`` (default) writes no fixtures: replay is single-shot,
             scored against round 1, the only round it can reproduce.
@@ -109,6 +122,7 @@ class PromoteOptions:
     names_only: bool = False
     tool_count: bool = False
     allow_errored: bool = False
+    allow_unbacked_claims: bool = False
     rounds: Literal["first", "all"] = "first"
     tool_properties: Mapping[str, frozenset[str]] | None = None
 
@@ -145,7 +159,10 @@ class BuiltExample:
             ``example`` is an inert placeholder and ``blocked`` names pydantic's first error.
             None of the latter four is rescued by ``--allow-errored``: re-capturing fixes
             the first, and the others reproduce identically unless the app changes what
-            it records. ``None`` when ``blocked`` is ``None``.
+            it records. ``"unbacked_claim"`` covers a turn that was offered tools, called
+            none, and replied as if it had ("my notes search didn't find anything") --
+            rescued only by ``allow_unbacked_claims``, never by ``--allow-errored``.
+            ``None`` when ``blocked`` is ``None``.
         promotion_source: Which yardstick the tool-call ground truth came
             from — ``"requested"`` when the capture recorded the calls the
             model itself asked for, ``"executed"`` when it fell back to the
@@ -220,6 +237,13 @@ def build_example_from_capture(
     loss = _context_loss_warning(events, recovered.inputs, recovered.history)
     if loss is not None:
         warnings.append(loss)
+    if recovered.history is not None:
+        # Recorded history only: it can keep its tool rows, so "backed" is decidable (and the
+        # scan itself yields nothing for one that kept none). History reconstructed from
+        # earlier turns is text-only and must never be scanned.
+        history_claims = _history_claims_warning(recovered.history)
+        if history_claims is not None:
+            warnings.append(history_claims)
     tags = _build_tags(envelope.suite, opts.tags)
     expected = _recover_expected(events, warnings)
 
@@ -379,6 +403,22 @@ def build_example_from_capture(
             blocked = note
             blocked_reason = "errored"
 
+    # Not an `elif` of the chain above, so an allowed errored turn still falls through
+    # to here -- and is skipped: errors take precedence (a failed turn is never evidence
+    # about tool choice, and expected_no_tools is already off for it). Every earlier
+    # refusal keeps its own reason too; this only judges an otherwise-promotable turn.
+    unbacked = None if errors else _unbacked_claim(events, tools_offered)
+    if blocked is None and unbacked is not None:
+        note = (
+            "turn was offered tools and called none, but its reply claims a tool action "
+            f'("{unbacked}") — promoting it would make a hallucinated action ground truth.'
+        )
+        if opts.allow_unbacked_claims:
+            warnings.append(note)
+        else:
+            blocked = note
+            blocked_reason = "unbacked_claim"
+
     failed_results = _failed_tool_results(events)
     if failed_results:
         names = ", ".join(sorted(set(failed_results)))
@@ -442,8 +482,10 @@ def build_example_from_capture(
         # nothing a candidate model could have failed to call, and
         # _score_no_tools would award 1.0/1.0 to an unmeasurable row), and a
         # turn that errored produced no tool calls because it never ran, not
-        # because calling nothing was right.
-        expected_no_tools = bool(tools_offered) and not errors
+        # because calling nothing was right. Nor is a turn that claimed a tool
+        # action it never took (allowed via allow_unbacked_claims): its own reply
+        # says a call was the right move.
+        expected_no_tools = bool(tools_offered) and not errors and unbacked is None
     expected_tool_rounds = tool_rounds if tool_rounds else None
     if unwrapped_keys:
         keys = ", ".join(sorted(unwrapped_keys))
@@ -1220,6 +1262,29 @@ def _context_loss_warning(
     return None
 
 
+def _history_claims_warning(history: Sequence[ChatMessage]) -> str | None:
+    """One warning naming every recorded history reply that claims a tool action never taken.
+
+    See :func:`~evalshift_cli.captures.claims.unbacked_history_claims`. Positions are
+    1-based, as in ``captures/repair.py``.
+    """
+    claims = unbacked_history_claims(history)
+    if not claims:
+        return None
+    if len(claims) == 1:
+        position, phrase = claims[0]
+        return (
+            f'history message {position} (assistant) claims a tool action ("{phrase}") with no '
+            "tool call in its turn — this case replays with that claim in context."
+        )
+    positions = ", ".join(str(position) for position, _ in claims)
+    phrases = ", ".join(f'"{phrase}"' for _, phrase in claims)
+    return (
+        f"history messages {positions} (assistant) claim tool actions ({phrases}) with no "
+        "tool call in their turn — this case replays with those claims in context."
+    )
+
+
 def _build_tags(suite: str, extra: tuple[str, ...]) -> list[str]:
     tags = [CAPTURED_TAG, suite]
     for tag in extra:
@@ -1321,17 +1386,57 @@ def _turn_current_text(built: BuiltExample, opts: PromoteOptions) -> str:
 def _turn_assistant_text(record: CaptureRecord) -> str | None:
     """The text a reconstructed history entry should use for a prior turn's reply.
 
-    Prefers the last :class:`FinalOutputEvent`; falls back to the last
-    non-empty :class:`ModelCallEvent` output. ``None`` when neither exists.
+    See :func:`_reply_text`.
     """
-    events = record.envelope.trace.events
+    return _reply_text(record.envelope.trace.events)
+
+
+def _reply_text(events: list[Any]) -> str | None:
+    """The text a turn replied with.
+
+    Prefers the last :class:`FinalOutputEvent` with non-blank text; falls back to
+    the last non-blank :class:`ModelCallEvent` output. A blank final event with
+    nothing to fall back to still counts as the (empty) reply. ``None`` when the
+    turn has neither.
+    """
     finals = [e for e in events if isinstance(e, FinalOutputEvent)]
-    if finals:
+    if finals and finals[-1].text.strip():
         return finals[-1].text
-    model_calls = [e for e in events if isinstance(e, ModelCallEvent) and _nonempty_text(e.output)]
+    model_calls = [
+        e
+        for e in events
+        if isinstance(e, ModelCallEvent) and isinstance(e.output, str) and e.output.strip()
+    ]
     if model_calls:
         return str(model_calls[-1].output)
+    if finals:
+        return finals[-1].text
     return None
+
+
+def _unbacked_claim(events: list[Any], tools_offered: Sequence[str] | None) -> str | None:
+    """The phrase a tool-free turn's reply uses to claim a tool action, if any.
+
+    Fires only when the turn could have acted and shows no sign it did: tools were
+    offered, and the turn recorded no ``tool_call`` or ``tool_result`` event, no
+    ``retrieval`` event (a RAG answer did search), no model call requesting a tool,
+    and only one model call -- a second one happens only after something was fed
+    back, which is the only trace of an agent loop in a pre-2.1.0 capture with no
+    ``requested_tool_calls``. A turn with any of that evidence is never flagged,
+    however its reply is worded.
+
+    Returns:
+        The matched phrase (see :func:`~evalshift_cli.captures.claims.find_tool_claim`),
+        or ``None`` when the turn is not an unbacked claim.
+    """
+    if not tools_offered:
+        return None
+    if any(isinstance(e, ToolCallEvent | ToolResultEvent | RetrievalEvent) for e in events):
+        return None
+    model_calls = [e for e in events if isinstance(e, ModelCallEvent)]
+    if len(model_calls) > 1 or any(call.requested_tool_calls for call in model_calls):
+        return None
+    return find_tool_claim(_reply_text(events) or "")
 
 
 def _earliest_prior_system_message(

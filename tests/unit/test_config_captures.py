@@ -148,6 +148,20 @@ def test_rounds_rejects_anything_else() -> None:
         EvalShiftConfig(prompts=[_PROMPT], captures={"rounds": "some"})
 
 
+def test_allow_unbacked_claims_defaults_to_false() -> None:
+    assert EvalShiftConfig(prompts=[_PROMPT]).captures.allow_unbacked_claims is False
+
+
+def test_allow_unbacked_claims_accepts_true() -> None:
+    cfg = EvalShiftConfig(prompts=[_PROMPT], captures={"allow_unbacked_claims": True})
+    assert cfg.captures.allow_unbacked_claims is True
+
+
+def test_a_misspelt_allow_unbacked_claims_fails_loudly() -> None:
+    with pytest.raises(ValidationError, match="allow_unbacked_claim"):
+        EvalShiftConfig(prompts=[_PROMPT], captures={"allow_unbacked_claim": True})
+
+
 @pytest.mark.parametrize("value", [0, -5])
 def test_max_cases_must_be_positive(value: int) -> None:
     with pytest.raises(ValidationError, match="max_cases"):

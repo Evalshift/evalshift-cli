@@ -93,6 +93,7 @@ def _model_call(
     input_tokens: int = 0,
     output_tokens: int = 0,
     cost_usd: float = 0.0,
+    output: Any = "out",
 ) -> dict[str, Any]:
     event: dict[str, Any] = {
         "type": "model_call",
@@ -101,7 +102,7 @@ def _model_call(
         "metadata": {},
         "model_id": model_id,
         "input": model_input,
-        "output": "out",
+        "output": output,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": cost_usd,
@@ -233,6 +234,7 @@ def _messages_call(
     *,
     messages: list[dict[str, Any]],
     input_tokens: int = 0,
+    tools_offered: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "type": "model_call",
@@ -244,7 +246,7 @@ def _messages_call(
         "output": "out",
         "input_tokens": input_tokens,
         "toolset_ref": "sha256:" + "ab" * 32,
-        "tools_offered": [],
+        "tools_offered": tools_offered if tools_offered is not None else [],
     }
 
 
@@ -564,6 +566,170 @@ class TestExpectedNoToolsRequiresOffered:
         assert built.example.expected_no_tools is False
 
 
+# ---------------------------------------------------------------------------
+# Unbacked tool claims -- a turn offered tools that called none, yet whose reply
+# says it searched/checked/looked something up, records a hallucinated action.
+# ---------------------------------------------------------------------------
+
+_CLAIM_REPLY = "I don't have that—my notes search didn't find anything."
+
+
+def _claim_events(**model_call: Any) -> list[dict[str, Any]]:
+    """The turn-9 shape: one model call offered tools, no call, a reply claiming a search."""
+    return [
+        _model_call(0, model_input="PO number on the Acme contract?", **model_call),
+        _final(_CLAIM_REPLY, 1),
+    ]
+
+
+class TestUnbackedClaim:
+    """A reply that claims a tool action the turn never took is not ground truth:
+    promoting it would score a candidate that *does* search as wrong
+    (``expected_no_tools``) and pin the fabricated reply as the expected output."""
+
+    def test_a_tool_free_turn_claiming_a_search_is_blocked(self) -> None:
+        built = build_example_from_capture(_envelope(events=_claim_events()), PromoteOptions())
+        assert built.blocked_reason == "unbacked_claim"
+        assert built.blocked == (
+            "turn was offered tools and called none, but its reply claims a tool action "
+            '("my notes search didn\'t") — promoting it would make a hallucinated action '
+            "ground truth."
+        )
+
+    def test_a_claim_backed_by_a_tool_call_is_not_blocked(self) -> None:
+        """However the reply is worded, a turn that executed a tool did act."""
+        events = [
+            _claim_events()[0],
+            _tool_call("search_orders", 1, args={}),
+            _final(_CLAIM_REPLY, 2),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+        assert built.blocked_reason is None
+
+    def test_a_claim_backed_by_a_requested_call_is_not_blocked(self) -> None:
+        """A requested call is the model's own action, even if the app recorded no
+        ``tool_call`` event for it."""
+        events = _claim_events(requested_tool_calls=[_requested("search_orders", {})])
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+
+    def test_a_claim_backed_by_a_tool_result_is_not_blocked(self) -> None:
+        """A recorded tool result means a tool ran, even when the app logged no
+        ``tool_call`` event and the model call carries no ``requested_tool_calls``."""
+        events = [
+            _claim_events()[0],
+            _tool_result("search_orders", 1, result="nothing"),
+            _final(_CLAIM_REPLY, 2),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+
+    def test_a_claim_backed_by_retrieval_is_not_blocked(self) -> None:
+        """A RAG turn searched its notes through retrieval, not a tool: the claim is true."""
+        events = [
+            _claim_events()[0],
+            {
+                "type": "retrieval",
+                "sequence_index": 1,
+                "timestamp": "2026-06-16T12:00:01+00:00",
+                "metadata": {},
+                "source": "notes",
+                "query": "Acme PO",
+                "documents": [],
+            },
+            _final(_CLAIM_REPLY, 2),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+
+    def test_an_agent_loop_is_not_blocked(self) -> None:
+        """A second model call only happens after something was fed back -- a pre-2.1.0
+        capture records no ``requested_tool_calls``, so the loop is the only trace of it."""
+        events = [
+            _claim_events()[0],
+            _model_call(1, model_input="PO number on the Acme contract?", output=_CLAIM_REPLY),
+            _final(_CLAIM_REPLY, 2),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+
+    def test_no_tools_offered_is_not_blocked(self) -> None:
+        """With nothing offered the turn could not have called a tool, so the check
+        has no "should have" to measure -- leave it to the reviewer."""
+        events = _claim_events(tools_offered=[])
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+        assert built.example.expected_no_tools is False
+
+    def test_a_plain_tool_free_answer_is_not_blocked(self) -> None:
+        """The common case must stay untouched: a tool-free answer that claims nothing
+        still promotes with ``expected_no_tools``."""
+        events = [_model_call(0, model_input="q"), _final("Friday is clear.", 1)]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+        assert built.example.expected_no_tools is True
+
+    def test_the_model_call_output_is_checked_without_a_final_event(self) -> None:
+        """Same reply rule as reconstructed history: last ``final_output``, else the
+        last non-empty model output."""
+        events = [_model_call(0, model_input="q", output=_CLAIM_REPLY)]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked_reason == "unbacked_claim"
+
+    @pytest.mark.parametrize("final_text", ["", "  \n"])
+    def test_an_empty_final_event_falls_back_to_the_model_call_output(
+        self, final_text: str
+    ) -> None:
+        """An empty ``final_output`` is no reply: the model call's text is what was said."""
+        events = [_model_call(0, model_input="q", output=_CLAIM_REPLY), _final(final_text, 1)]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked_reason == "unbacked_claim"
+
+    def test_errored_wins_over_unbacked_claim(self) -> None:
+        """An errored turn keeps reporting as errored -- the failure is the root cause,
+        and ``--allow-errored`` is the hint the operator needs."""
+        events = [*_claim_events(), _error("boom", 2)]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked_reason == "errored"
+
+    def test_an_allowed_errored_turn_is_not_reblocked_as_unbacked(self) -> None:
+        """Errors take precedence even when allowed: the operator opted into a failed
+        turn, which is never evidence calling nothing was right, so ``expected_no_tools``
+        is already off and an unbacked-claim block would only contradict the opt-in."""
+        events = [*_claim_events(), _error("boom", 2)]
+        built = build_example_from_capture(
+            _envelope(events=events), PromoteOptions(allow_errored=True)
+        )
+        assert built.blocked is None
+        assert built.blocked_reason is None
+        assert not any("claims a tool action" in w for w in built.warnings)
+        assert built.example.expected_no_tools is False
+
+    def test_toolset_refusals_win_over_unbacked_claim(self) -> None:
+        """Only an otherwise-promotable turn is checked; earlier refusals keep their reason."""
+        events = _claim_events(toolset_ref=None)
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked_reason == "no_toolset"
+
+    def test_allow_errored_does_not_rescue_it(self) -> None:
+        built = build_example_from_capture(
+            _envelope(events=_claim_events()), PromoteOptions(allow_errored=True)
+        )
+        assert built.blocked_reason == "unbacked_claim"
+
+    def test_allowed_it_promotes_with_a_warning_and_no_expected_no_tools(self) -> None:
+        """Mirrors ``allow_errored``: a turn that claimed a search is not evidence that
+        calling nothing was right, so the opt-in never asserts ``expected_no_tools``."""
+        built = build_example_from_capture(
+            _envelope(events=_claim_events()), PromoteOptions(allow_unbacked_claims=True)
+        )
+        assert built.blocked is None
+        assert built.blocked_reason is None
+        assert any("my notes search didn't" in w for w in built.warnings)
+        assert built.example.expected_no_tools is False
+
+
 def test_build_strict_args_uses_exact_match() -> None:
     built = build_example_from_capture(_envelope(), PromoteOptions(strict_args=True))
     assert (built.example.expected_tools or [])[0].match_strategy == "exact"
@@ -658,6 +824,203 @@ def test_build_messages_list_model_role_coerced_to_assistant() -> None:
     assert built.example.history is not None
     assert [m.role for m in built.example.history] == ["user", "assistant"]
     assert built.example.history[1].content == "hello"
+
+
+#: A recorded history turn that did call a tool -- what tells the scan the app keeps tool rows.
+_BACKED_TURN: list[dict[str, Any]] = [
+    {"role": "user", "content": "Anything on Friday?"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "c9", "name": "search_notes", "arguments": {}}],
+    },
+    {"role": "tool", "tool_call_id": "c9", "content": "nothing"},
+    {"role": "assistant", "content": "Friday is clear."},
+]
+
+
+class TestUnbackedHistoryClaims:
+    """A case whose *recorded* history carries a reply claiming a tool action it never
+    took replays with that fabrication in context -- worth a warning, not a block: the
+    current turn may be fine."""
+
+    _HISTORY_WARNING = (
+        'history message 2 (assistant) claims a tool action ("my notes search didn\'t") '
+        "with no tool call in its turn — this case replays with that claim in context."
+    )
+
+    @pytest.mark.parametrize("tools_offered", [["search_notes"], []])
+    def test_recorded_history_with_an_unbacked_claim_warns(self, tools_offered: list[str]) -> None:
+        """The turn-10 shape. The warning is about the history, not the current turn, so it
+        fires whether or not this turn was offered tools."""
+        messages = [
+            {"role": "user", "content": "PO number on the Acme contract?"},
+            {"role": "assistant", "content": _CLAIM_REPLY},
+            *_BACKED_TURN,
+            {"role": "user", "content": "Try the Globex one then."},
+        ]
+        events = [
+            _messages_call(0, messages=messages, tools_offered=tools_offered),
+            _final("Globex is PO-7.", 1),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert built.blocked is None
+        assert built.warnings.count(self._HISTORY_WARNING) == 1
+
+    def test_several_unbacked_claims_aggregate_into_one_warning(self) -> None:
+        messages = [
+            {"role": "user", "content": "PO number on the Acme contract?"},
+            {"role": "assistant", "content": _CLAIM_REPLY},
+            {"role": "user", "content": "Friday?"},
+            {"role": "assistant", "content": "I've checked your calendar: it's clear."},
+            *_BACKED_TURN,
+            {"role": "user", "content": "Thanks."},
+        ]
+        events = [
+            _messages_call(0, messages=messages, tools_offered=["search_notes"]),
+            _final("You're welcome.", 1),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        claim_warnings = [w for w in built.warnings if "claim" in w]
+        assert claim_warnings == [
+            "history messages 2, 4 (assistant) claim tool actions "
+            '("my notes search didn\'t", "I\'ve checked") with no tool call in their '
+            "turn — this case replays with those claims in context."
+        ]
+
+    def test_tool_stripped_recorded_history_does_not_warn(self) -> None:
+        """No tool row anywhere: the app dropped them when resending, so a past claim
+        can't be judged and every one would warn."""
+        messages = [
+            {"role": "user", "content": "PO number on the Acme contract?"},
+            {"role": "assistant", "content": _CLAIM_REPLY},
+            {"role": "user", "content": "Try the Globex one then."},
+        ]
+        events = [
+            _messages_call(0, messages=messages, tools_offered=["search_notes"]),
+            _final("Globex is PO-7.", 1),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert not any("claim" in w for w in built.warnings)
+
+    def test_a_claim_backed_by_a_recorded_call_does_not_warn(self) -> None:
+        messages = [
+            {"role": "user", "content": "PO number on the Acme contract?"},
+            {
+                "role": "assistant",
+                "content": "Let me look.",
+                "tool_calls": [{"id": "c1", "name": "search_notes", "arguments": {}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "nothing"},
+            {"role": "assistant", "content": _CLAIM_REPLY},
+            {"role": "user", "content": "Try the Globex one then."},
+        ]
+        events = [
+            _messages_call(0, messages=messages, tools_offered=["search_notes"]),
+            _final("Globex is PO-7.", 1),
+        ]
+        built = build_example_from_capture(_envelope(events=events), PromoteOptions())
+        assert not any("claim" in w for w in built.warnings)
+
+    def test_reconstructed_history_is_not_scanned(self) -> None:
+        """Reconstructed history is text-only: scanning it would flag every past reply."""
+        turn0 = _envelope(
+            capture_id="cap_t0",
+            conversation_id="conv_1",
+            turn_index=0,
+            events=[
+                _model_call(0, model_input="Am I free Friday?"),
+                _tool_call("search_orders", 1, args={}),
+                _final("I checked your calendar: Friday is clear.", 2),
+            ],
+        )
+        turn1 = _envelope(
+            capture_id="cap_t1",
+            conversation_id="conv_1",
+            turn_index=1,
+            events=[_model_call(0, model_input="And Saturday?"), _final("Also clear.", 1)],
+        )
+
+        results = build_conversation_examples([_record(turn0), _record(turn1)], PromoteOptions())
+
+        _, built1 = results[1]
+        assert built1.example.history is not None
+        assert built1.example.history[1].content == "I checked your calendar: Friday is clear."
+        assert built1.blocked is None
+        assert not any("claim" in w for w in built1.warnings)
+
+    def test_reconstructed_history_skips_an_empty_final_event(self) -> None:
+        """Same reply rule as the claim check: an empty ``final_output`` falls back to the
+        model call's text rather than replaying an empty assistant message."""
+        turn0 = _envelope(
+            capture_id="cap_t0",
+            conversation_id="conv_1",
+            turn_index=0,
+            events=[
+                _model_call(0, model_input="Am I free Friday?", output="Friday is clear."),
+                _final("", 1),
+            ],
+        )
+        turn1 = _envelope(
+            capture_id="cap_t1",
+            conversation_id="conv_1",
+            turn_index=1,
+            events=[_model_call(0, model_input="And Saturday?"), _final("Also clear.", 1)],
+        )
+
+        results = build_conversation_examples([_record(turn0), _record(turn1)], PromoteOptions())
+
+        _, built1 = results[1]
+        assert built1.example.history is not None
+        assert built1.example.history[1].content == "Friday is clear."
+
+    def test_reconstructed_history_keeps_an_empty_final_with_nothing_to_fall_back_to(
+        self,
+    ) -> None:
+        """With no model-call text either, the empty reply is still the turn's reply."""
+        turn0 = _envelope(
+            capture_id="cap_t0",
+            conversation_id="conv_1",
+            turn_index=0,
+            events=[_model_call(0, model_input="Am I free Friday?", output=""), _final("", 1)],
+        )
+        turn1 = _envelope(
+            capture_id="cap_t1",
+            conversation_id="conv_1",
+            turn_index=1,
+            events=[_model_call(0, model_input="And Saturday?"), _final("Also clear.", 1)],
+        )
+
+        results = build_conversation_examples([_record(turn0), _record(turn1)], PromoteOptions())
+
+        _, built1 = results[1]
+        assert [(m.role, m.content) for m in built1.example.history or []] == [
+            ("user", "Am I free Friday?"),
+            ("assistant", ""),
+        ]
+
+    def test_a_blocked_unbacked_turn_does_not_seed_reconstructed_history(self) -> None:
+        turn0 = _envelope(
+            capture_id="cap_t0",
+            conversation_id="conv_1",
+            turn_index=0,
+            events=_claim_events(),
+        )
+        turn1 = _envelope(
+            capture_id="cap_t1",
+            conversation_id="conv_1",
+            turn_index=1,
+            events=[_model_call(0, model_input="And Globex?"), _final("Globex is PO-7.", 1)],
+        )
+
+        results = build_conversation_examples([_record(turn0), _record(turn1)], PromoteOptions())
+
+        (_, built0), (_, built1) = results
+        assert built0.blocked_reason == "unbacked_claim"
+        assert built1.blocked is None
+        history = built1.example.history or []
+        assert all("Acme" not in m.content for m in history)
+        assert all(m.content != _CLAIM_REPLY for m in history)
 
 
 def test_promote_preserves_tool_turns_in_history() -> None:
