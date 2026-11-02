@@ -7,9 +7,9 @@ Open-source LLM migration and regression testing for AI agents.
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/evalshift.svg)](https://pypi.org/project/evalshift/)
 
-[![EvalShift getting started: catch model migration regressions in 4 minutes](https://img.youtube.com/vi/22-dRnu5fXs/sddefault.jpg)](https://www.youtube.com/watch?v=22-dRnu5fXs)
+[![EvalShift getting started: catch model migration regressions in 4 minutes](https://img.youtube.com/vi/kD7XTYSqBX4/maxresdefault.jpg)](https://www.youtube.com/watch?v=kD7XTYSqBX4)
 
-▶ [Watch the 4-minute getting-started video on YouTube](https://www.youtube.com/watch?v=22-dRnu5fXs)
+▶ [Watch the 4-minute getting-started video on YouTube](https://www.youtube.com/watch?v=kD7XTYSqBX4)
 
 **The SDK captures what your agent really did. The CLI replays it against a
 candidate model and tells you what broke. The hosted app keeps the history.**
