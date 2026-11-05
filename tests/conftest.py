@@ -349,8 +349,9 @@ def _isolated_response_cache(
 
     Command-level tests (``run``, ``compare``, ``evaluate`` and the integration
     pipelines) open the cache without passing a URL, which resolves to
-    ``~/.evalshift/cache.db``. Unredirected, they wrote the developer's real
-    cache, and a row left there by one test run could serve the next one.
+    ``.evalshift/cache.db`` under the current directory — the repo root when
+    a test does not ``chdir``. Unredirected, a row left there by one test run
+    could serve the next one.
     ``tmp_path_factory`` rather than ``tmp_path``, so tests that inspect their
     own ``tmp_path`` never find a stray ``cache.db`` in it.
     """

@@ -101,7 +101,8 @@ as one section under the pipeline block (also on stage failure); errors are neve
 | traces.jsonl | traces import | optional BYO agent traces |
 | run_bundle.json.gz | bundle/push | optional hosted upload bundle |
 
-Cache: SQLite ~/.evalshift/cache.db, key = SHA-256 of canonical JSON {model, prompt, inputs,
+Cache: SQLite .evalshift/cache.db in the folder the command runs in (beside .evalshift/runs/;
+projects never share it), key = SHA-256 of canonical JSON {model, prompt, inputs,
 temperature, max_tokens[, history]} + generation_config, tools array as sent, round index, sample
 index when set; TTL 7 days. Tool-calling examples ARE cached, one entry per replayed round, keyed
 on canonical model + prompt + inputs + the exact message list that round sends (history, current
@@ -115,7 +116,15 @@ cached_rounds > 0 = latency partly from an earlier run: excluded from live laten
 latency_comparable false. Errors never cached (next run re-sends the failed round; earlier rounds
 hit); truncated responses cached and still flagged; a hit records the original cost and latency.
 An older cache.db is upgraded in place and keeps its entries; concurrent opens by several
-processes are safe. defaults.cache: false disables; `evalshift cache clear` wipes.
+processes are safe. A replayed call never reached the model, so it cannot show a model changed
+behind the same name (other server, server-side system prompt, re-pulled weights): when any
+call was replayed, `run` prints "⚠ N model calls were replayed from this project's response cache
+(T on the target) ..." under its summary and `compare` prints it above the verdict.
+`run/compare --no-cache` sends every run-stage call live AND writes the fresh responses (replacing
+the cached ones), so the next ordinary run replays the new answers; evaluate-stage judge/embedding
+cache unaffected. defaults.cache: false disables (no reads, no writes); `evalshift cache clear`
+wipes this project's cache. 1.6.2 and earlier used one machine-wide ~/.evalshift/cache.db; nothing
+reads it now, `cache clear` mentions it when present (never deletes it).
 Resume: `run --resume` continues newest in_progress run; requires config_hash match (canonical
 config + suite PATH; suite contents are NOT hashed, so start fresh after editing examples),
 skips (prompt_id, example_id, role, sample_index) keys already in raw.jsonl; errored calls
@@ -225,7 +234,7 @@ evalshift doctor
     "alpha: N case file(s) could not be read; the counts leave them out"
   Measured against defaults.source_model, models matched on bare names (see capture sync).
 evalshift run [-f/--from MODEL] [-t/--to MODEL] [-c CONFIG] [-s/--suite FILE]
-    [--suite-name NAME] [--resume] [-y/--yes]
+    [--suite-name NAME] [--resume] [-y/--yes] [--no-cache]
   Paired run over (prompt x example x {source,target}). --from/--to override
   defaults.source_model/target_model. --suite default ./golden.jsonl; --suite-name selects a
   key under suites: in config. Costs money — always calls real models.
@@ -701,7 +710,7 @@ evalshift diff case RUN_ID EXAMPLE_ID          (trace diff when traces exist, el
 evalshift replay case RUN_ID EXAMPLE_ID [--model source|target (default target)] [--trace]
 evalshift runs clean [--keep N] [--older-than DAYS] [--suite SLUG] [--dry-run] [-y] [--config]
   Precedence for keep count: --keep > EVALSHIFT_MAX_RUNS > config (default 20). 0 disables.
-evalshift cache clear
+evalshift cache clear                          (this project's .evalshift/cache.db)
 
 Hidden debug commands:
 evalshift validate [-s SUITE=golden.jsonl] [-c CONFIG]   (config+suite+prompt cross-check;

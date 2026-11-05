@@ -65,6 +65,7 @@ from evalshift_cli.cli.commands.evaluate import (
     run_evaluate,
 )
 from evalshift_cli.cli.commands.report import run_report
+from evalshift_cli.cli.commands.run import cache_replay_notice
 from evalshift_cli.config.loader import ConfigError, load_config
 from evalshift_cli.config.models import EvalShiftConfig, EvaluatorsConfig
 from evalshift_cli.evaluators.keys import LLM_JUDGE_KIND, SEMANTIC_EVALUATOR_NAME, EvaluatorKeyGap
@@ -496,6 +497,16 @@ def compare_command(
         bool,
         typer.Option("--push", help="Push the completed run bundle to hosted EvalShift."),
     ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help=(
+                "Send every model call live instead of replaying cached responses. "
+                "The fresh responses replace the cached ones."
+            ),
+        ),
+    ] = False,
     runs_base: Annotated[
         Path,
         typer.Option("--runs-base", help="Base directory for run state (advanced).", hidden=True),
@@ -679,6 +690,7 @@ def compare_command(
                             suite_name=suite_name,
                             console=console,
                             on_progress=_on_progress,
+                            no_cache=no_cache,
                         ),
                     )
                 except (
@@ -782,6 +794,12 @@ def compare_command(
     if freshness:
         for line in freshness:
             console.print(line, soft_wrap=True)
+        console.print()
+    # And again: a replayed call never reached the model, so the verdict below
+    # cannot see a model that changed behind the same name.
+    replay_notice = cache_replay_notice(run_result)
+    if replay_notice is not None:
+        console.print(replay_notice)
         console.print()
     collapsed_note = format_collapsed_slices(analyze_result.collapsed_slices)
     if collapsed_note is not None:

@@ -8,6 +8,7 @@ calls happen.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -369,3 +370,103 @@ class TestEvaluatorKeyPreflight:
         assert "every configured evaluator would be skipped" in flat
         assert "OPENAI_API_KEY" in flat
         assert not (tmp_path / ".evalshift" / "runs").exists()
+
+
+# ---------------------------------------------------------------------------
+# Response cache: replay notice and --no-cache
+# ---------------------------------------------------------------------------
+
+
+class _CountingClient:
+    """Fake ``ModelClient.complete`` that counts live calls and answers ``text``."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.calls = 0
+        self.text = "ok"
+
+        async def fake_complete(_client: ModelClient, **kwargs: Any) -> CompletionResult:
+            self.calls += 1
+            return CompletionResult(
+                text=self.text,
+                model_id=str(kwargs["model"]),
+                input_tokens=5,
+                output_tokens=2,
+                cost_usd=0.0,
+                latency_ms=10,
+            )
+
+        monkeypatch.setattr(ModelClient, "complete", fake_complete)
+        _set_api_keys(monkeypatch)
+
+
+def _flat(output: str) -> str:
+    return " ".join(output.split())
+
+
+class TestCacheReplay:
+    def test_a_fully_live_run_has_no_notice(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        _CountingClient(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["run", "--yes"])
+        assert result.exit_code == 0, result.stdout
+        assert "replayed" not in result.stdout
+
+    def test_a_replayed_run_says_so_and_names_the_way_out(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        _CountingClient(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(app, ["run", "--yes"])
+
+        result = runner.invoke(app, ["run", "--yes"])
+
+        assert result.exit_code == 0, result.stdout
+        flat = _flat(result.stdout)
+        # 2 examples x {source, target}, all served from the first run.
+        assert "4 model calls were replayed from this project's response cache" in flat
+        assert "2 on the target" in flat
+        assert "--no-cache" in flat
+
+    def test_no_cache_sends_every_call_live(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        client = _CountingClient(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(app, ["run", "--yes"])
+        assert client.calls == 4
+
+        result = runner.invoke(app, ["run", "--yes", "--no-cache"])
+
+        assert result.exit_code == 0, result.stdout
+        assert client.calls == 8
+        assert "replayed" not in result.stdout
+
+    def test_the_next_cached_run_replays_the_fresh_answers(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # --no-cache still writes, so the stale answers it bypassed do not
+        # come back on the next ordinary run.
+        _scaffold(tmp_path)
+        client = _CountingClient(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(app, ["run", "--yes"])
+        client.text = "fresh"
+        runner.invoke(app, ["run", "--yes", "--no-cache"])
+        before = set((tmp_path / ".evalshift" / "runs").iterdir())
+
+        result = runner.invoke(app, ["run", "--yes"])
+
+        assert result.exit_code == 0, result.stdout
+        assert client.calls == 8
+        [latest] = set((tmp_path / ".evalshift" / "runs").iterdir()) - before
+        rows = [
+            json.loads(line)
+            for line in (latest / "raw.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert {row["text"] for row in rows} == {"fresh"}
+        assert all(row["cached"] for row in rows)

@@ -42,6 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   didn't") with no tool call in its turn — this case replays with that claim
   in context.`). The case is still promoted. A recorded history with no tool
   rows at all, and history reconstructed from sibling turns, are not checked.
+- **`run --no-cache` and `compare --no-cache`** send every run-stage call live
+  instead of replaying cached responses. The fresh responses still go into the
+  cache and replace the ones they bypassed, so the next ordinary run replays
+  the new answers, not the old ones. The evaluate stage's judge and embedding
+  cache is unaffected.
+- **A run says when it replayed calls from the cache.** A replayed call never
+  reached the model, so a model that changed behind the same name (another
+  server, a server-side system prompt, re-pulled weights) could not show up in
+  it, and nothing said so. `run` now prints `⚠ N model calls were replayed from
+  this project's response cache (T on the target) …` under its summary, and
+  `compare` prints it above the verdict, naming `--no-cache` as the way out.
+
+### Changed
+
+- **The response cache belongs to the project.** It moved from the
+  machine-wide `~/.evalshift/cache.db` to `.evalshift/cache.db` in the folder
+  the command runs in, beside `.evalshift/runs/`. A second project testing a
+  different backend under the same model name used to replay the first
+  project's answers. The first run in each project starts with an empty
+  cache. Nothing reads the old file any more; `evalshift cache clear` clears
+  this project's cache, names its path, and points at the old file when it
+  exists (it never deletes it). The default `.gitignore` advice
+  (`.evalshift/*`) already covers the new file.
 
 ## [1.6.2] - 2026-10-27
 
