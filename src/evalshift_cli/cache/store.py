@@ -158,6 +158,10 @@ class CacheStore:
     and one session's rollback-on-return would discard another's
     uncommitted write. File-backed databases use a real connection pool and
     run unserialised.
+
+    A *refreshing* store (``refresh=True``, behind ``--no-cache``) misses on
+    every :meth:`get` but still writes on :meth:`put`, so the fresh responses
+    replace the ones it bypassed instead of leaving them for the next run.
     """
 
     def __init__(
@@ -165,10 +169,12 @@ class CacheStore:
         engine: AsyncEngine,
         *,
         ttl: timedelta = timedelta(days=DEFAULT_TTL_DAYS),
+        refresh: bool = False,
     ) -> None:
         self._engine = engine
         self._sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
         self._ttl = ttl
+        self._refresh = refresh
         self._shared_connection_lock: asyncio.Lock | None = (
             asyncio.Lock() if _pool_shares_one_connection(engine) else None
         )
@@ -180,6 +186,7 @@ class CacheStore:
         *,
         ttl: timedelta = timedelta(days=DEFAULT_TTL_DAYS),
         path: Path | None = None,
+        refresh: bool = False,
     ) -> CacheStore:
         """Open the cache, creating the schema if necessary.
 
@@ -188,6 +195,7 @@ class CacheStore:
             ttl: How long cached entries are considered fresh.
             path: Override the on-disk location used when
                 ``database_url`` is ``None``.
+            refresh: Never serve a hit; keep writing. See the class docstring.
         """
         url = database_url or default_database_url(path)
         engine = create_engine(url)
@@ -197,7 +205,7 @@ class CacheStore:
             # No store owns the engine yet, so nothing else would close it.
             await engine.dispose()
             raise
-        return cls(engine, ttl=ttl)
+        return cls(engine, ttl=ttl, refresh=refresh)
 
     async def close(self) -> None:
         """Dispose of the underlying engine."""
@@ -221,7 +229,12 @@ class CacheStore:
             yield session
 
     async def get(self, key: str) -> CachedResponse | None:
-        """Return the cached response for ``key`` or ``None`` on miss/expiry."""
+        """Return the cached response for ``key`` or ``None`` on miss/expiry.
+
+        Always ``None`` on a refreshing store.
+        """
+        if self._refresh:
+            return None
         cutoff = _utcnow() - self._ttl
         async with self._session() as session:
             stmt = select(CachedCall).where(CachedCall.cache_key == key)

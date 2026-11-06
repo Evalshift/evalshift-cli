@@ -109,6 +109,16 @@ def run(
             ),
         ),
     ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help=(
+                "Send every model call live instead of replaying cached responses. "
+                "The fresh responses replace the cached ones."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run paired evaluation on two models against your golden suite."""
     console = Console()
@@ -170,6 +180,7 @@ def run(
                 run_slug=derive_suite_slug(suite_name=suite_name, suite_path=resolved_suite_path),
                 suite_name=suite_name,
                 console=console,
+                no_cache=no_cache,
             ),
         )
     except PromptParseError as exc:
@@ -192,6 +203,27 @@ def run(
         raise typer.Exit(code=1) from exc
 
     _print_summary(console, result)
+    notice = cache_replay_notice(result)
+    if notice is not None:
+        console.print(notice)
+
+
+def cache_replay_notice(result: RunResult) -> str | None:
+    """The warning for a run that served calls from the response cache.
+
+    A replayed call never reached the model, so a model that changed behind
+    the same name (another server, a server-side system prompt, re-pulled
+    weights) cannot show up in it. ``None`` when every call went out live.
+    """
+    if result.cached_calls == 0:
+        return None
+    calls = "call was" if result.cached_calls == 1 else "calls were"
+    return (
+        f"[yellow]⚠[/yellow] {result.cached_calls} model {calls} replayed from this "
+        f"project's response cache ({result.cached_target_calls} on the target) "
+        "instead of being sent. A model that changed behind the same name will not "
+        "show up in them; re-run with [bold]--no-cache[/bold] to send every call live."
+    )
 
 
 def _print_summary(console: Console, result: RunResult) -> None:
@@ -252,4 +284,4 @@ def _print_missing_api_keys(
     console.print("\n".join(lines))
 
 
-__all__ = ["run"]
+__all__ = ["cache_replay_notice", "run"]

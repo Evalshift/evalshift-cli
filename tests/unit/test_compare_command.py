@@ -929,3 +929,36 @@ class TestFamilySummarySkipped:
         gaps = evaluator_key_gaps(evaluators, {})
         assert _evaluator_family_summary(evaluators, gaps) == "semantic (no key) · judge (no key)"
         assert _evaluator_family_summary(evaluators) == "semantic · judge"
+
+
+class TestCacheReplay:
+    def test_a_replayed_compare_warns_above_the_verdict(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        _patch_client(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+        first = runner.invoke(app, ["all", "--yes"])
+        assert first.exit_code == 0, first.output
+        assert "replayed" not in first.output
+
+        result = runner.invoke(app, ["all", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert "8 model calls were replayed from this project's response cache" in flat
+        # Above the verdict block, which ends with the run id line.
+        assert flat.index("replayed") < flat.index("no significant change")
+
+    def test_no_cache_drops_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _scaffold(tmp_path)
+        _patch_client(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(app, ["all", "--yes"])
+
+        result = runner.invoke(app, ["all", "--yes", "--no-cache"])
+
+        assert result.exit_code == 0, result.output
+        assert "replayed" not in result.output

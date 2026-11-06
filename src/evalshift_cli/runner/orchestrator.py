@@ -141,6 +141,7 @@ class RunResult:
     total_calls: int
     completed_calls: int
     cached_calls: int
+    cached_target_calls: int
     live_calls: int
     failed_calls: int
     total_cost_usd: float
@@ -195,6 +196,7 @@ async def run_orchestrator(
     client: ModelClient | None = None,
     cache: CacheStore | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,
+    no_cache: bool = False,
 ) -> RunResult:
     """Execute (or resume) a run end-to-end.
 
@@ -219,6 +221,9 @@ async def run_orchestrator(
         console: Rich console (created if not supplied).
         client: :class:`ModelClient` to use; mostly here for tests.
         cache: :class:`CacheStore` to use; mostly here for tests.
+        no_cache: ``--no-cache``: send every call live, still caching the
+            fresh responses. Applies to the cache this function opens; a
+            ``cache`` passed in is used as given.
     """
     cons = console or Console()
 
@@ -304,7 +309,7 @@ async def run_orchestrator(
 
     # Real work.
     cache_owned = cache is None
-    cache_inst = cache or await CacheStore.open()
+    cache_inst = cache or await CacheStore.open(refresh=no_cache)
     client_inst = client or ModelClient()
 
     try:
@@ -1074,6 +1079,7 @@ async def _process_work(
     write_lock = asyncio.Lock()
     completed = already_done
     cached_count = 0
+    cached_target_count = 0
     live_count = 0
     failed_count = 0
     total_cost = 0.0
@@ -1103,7 +1109,8 @@ async def _process_work(
     template_by_id: dict[str, PromptTemplate] = {t.id: t for t in templates}
 
     async def _do_one(item: WorkItem) -> None:
-        nonlocal completed, cached_count, live_count, failed_count, total_cost
+        nonlocal completed, cached_count, cached_target_count, live_count, failed_count
+        nonlocal total_cost
         async with sem:
             tmpl = template_by_id[item.prompt.id]
             prompt_text = render(tmpl.content, item.example.inputs)
@@ -1122,6 +1129,8 @@ async def _process_work(
                 completed += 1
                 if call.cached:
                     cached_count += 1
+                    if call.role == "target":
+                        cached_target_count += 1
                 elif call.error is None:
                     live_count += 1
                 if call.error is not None:
@@ -1174,6 +1183,7 @@ async def _process_work(
         total_calls=total,
         completed_calls=completed,
         cached_calls=cached_count,
+        cached_target_calls=cached_target_count,
         live_calls=live_count,
         failed_calls=failed_count,
         total_cost_usd=total_cost,

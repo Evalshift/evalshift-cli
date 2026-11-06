@@ -90,7 +90,7 @@ Housekeeping:
 ```
 evalshift inspect <run-id> [--failed]   # per-row deltas (--failed: negative or errored only)
 evalshift bundle <run-id> -o out.json.gz   # write the bundle somewhere else
-evalshift cache clear                   # wipe the local response cache
+evalshift cache clear                   # wipe this project's response cache
 evalshift runs clean                    # prune old runs (--keep, --older-than, --dry-run)
 ```
 

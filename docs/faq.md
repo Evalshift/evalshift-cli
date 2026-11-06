@@ -7,7 +7,7 @@
 machine to the LLM provider you configured — any provider LiteLLM supports —
 using your own API keys.
 
-The local SQLite cache at `~/.evalshift/cache.db` only contains
+The project's SQLite cache at `.evalshift/cache.db` only contains
 provider responses for *your* prompts and inputs.
 
 Hosted uploads are explicit. `bundle` packages the completed

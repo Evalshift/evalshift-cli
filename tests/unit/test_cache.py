@@ -22,6 +22,7 @@ from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from typer.testing import CliRunner
 
+from evalshift_cli.cache.schema import DEFAULT_CACHE_PATH as SHIPPED_CACHE_PATH
 from evalshift_cli.cache.schema import Base, create_engine
 from evalshift_cli.cache.store import CacheStore, cache_key
 from evalshift_cli.cli.main import app
@@ -29,6 +30,9 @@ from evalshift_cli.evaluators.tool_models import ToolCall, ToolTrace
 
 # Use an in-memory database for every test to keep them fast and hermetic.
 IN_MEMORY_DB = "sqlite+aiosqlite:///:memory:"
+
+# SHIPPED_CACHE_PATH is bound at import, before the autouse fixture in
+# tests/conftest.py redirects the module attribute, so it is the real default.
 
 
 # ---------------------------------------------------------------------------
@@ -302,8 +306,8 @@ class TestCacheKey:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        assert cache_key(**base) == expected  # type: ignore[arg-type]
-        assert cache_key(**base, tools_payload=None) == expected  # type: ignore[arg-type]
+        assert cache_key(**base) == expected
+        assert cache_key(**base, tools_payload=None) == expected
 
     def _tool_key(self, tools_payload: list[dict[str, Any]] | None) -> str:
         return cache_key(
@@ -529,7 +533,7 @@ class TestCacheStore:
         import asyncio
 
         kw = _put_kwargs()
-        await asyncio.gather(*(store.put("k", **kw) for _ in range(4)))  # type: ignore[arg-type]
+        await asyncio.gather(*(store.put("k", **kw) for _ in range(4)))
         got = await store.get("k")
         assert got is not None
         assert got.response_text == "Hello Alex!"
@@ -592,7 +596,7 @@ class TestCacheStoreSingleConnectionPool:
 
         async def miss_then_put(key: str) -> None:
             assert await store.get(key) is None
-            await store.put(key, **_put_kwargs())  # type: ignore[arg-type]
+            await store.put(key, **_put_kwargs())
 
         try:
             await asyncio.gather(*(miss_then_put(k) for k in keys))
@@ -624,7 +628,7 @@ class TestCacheStoreSingleConnectionPool:
         event.listen(pool, "checkin", on_checkin)
         try:
             await asyncio.gather(
-                *(store.put(f"k{i}", **_put_kwargs()) for i in range(4)),  # type: ignore[arg-type]
+                *(store.put(f"k{i}", **_put_kwargs()) for i in range(4)),
                 *(store.get(f"k{i}") for i in range(4)),
                 store.count(),
             )
@@ -647,8 +651,8 @@ class TestCacheClearCommand:
     def test_clear_runs_against_fresh_db(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # Redirect the default cache path into tmp so we don't touch the
-        # user's real ~/.evalshift/cache.db.
+        # Redirect the default cache path into tmp so we never clear the
+        # repo's own .evalshift/cache.db.
         monkeypatch.setattr(
             "evalshift_cli.cache.schema.DEFAULT_CACHE_PATH",
             tmp_path / "cache.db",
@@ -656,6 +660,52 @@ class TestCacheClearCommand:
         result = runner.invoke(app, ["cache", "clear"])
         assert result.exit_code == 0, result.stdout
         assert "cleared" in result.stdout
+
+    def test_clear_empties_this_projects_cache(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr("evalshift_cli.cache.schema.DEFAULT_CACHE_PATH", SHIPPED_CACHE_PATH)
+        monkeypatch.chdir(tmp_path)
+
+        async def seed() -> None:
+            store = await CacheStore.open()
+            try:
+                await store.put("k", **_put_kwargs())
+            finally:
+                await store.close()
+
+        asyncio.run(seed())
+        result = runner.invoke(app, ["cache", "clear"])
+        assert result.exit_code == 0, result.stdout
+        assert "cleared 1 cached call(s)" in result.stdout
+        assert ".evalshift/cache.db" in result.stdout
+
+    def test_clear_points_at_the_old_machine_wide_cache(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Before the cache moved into the project, every project shared
+        # ~/.evalshift/cache.db. Nothing reads it any more; clear says where it
+        # is so it can be deleted, but never deletes it itself.
+        home = tmp_path / "home"
+        legacy = home / ".evalshift" / "cache.db"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["cache", "clear"])
+        assert result.exit_code == 0, result.stdout
+        flat = " ".join(result.stdout.split())
+        assert "no longer used" in flat
+        assert legacy.is_file()
+
+    def test_clear_is_quiet_without_an_old_cache(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["cache", "clear"])
+        assert result.exit_code == 0, result.stdout
+        assert "no longer used" not in result.stdout
 
     def test_cache_help_lists_clear(self) -> None:
         result = runner.invoke(app, ["cache", "--help"])
@@ -740,7 +790,7 @@ class TestCacheStoreToolTrace:
     async def test_round_trip_preserves_the_trace_exactly(self, store: CacheStore) -> None:
         trace = _rich_trace()
         kw = _tool_put_kwargs(trace)
-        await store.put("k", **kw, finish_reason="tool_calls", trace=trace)  # type: ignore[arg-type]
+        await store.put("k", **kw, finish_reason="tool_calls", trace=trace)
         got = await store.get("k")
         assert got is not None
         assert got.trace == trace
@@ -756,7 +806,7 @@ class TestCacheStoreToolTrace:
             calls=[ToolCall(tool_name="t", arguments={}, call_id="c1", sequence_index=0)],
             final_text=None,
         )
-        await store.put("k", **_tool_put_kwargs(trace), trace=trace)  # type: ignore[arg-type]
+        await store.put("k", **_tool_put_kwargs(trace), trace=trace)
         got = await store.get("k")
         assert got is not None
         assert got.trace == trace
@@ -764,7 +814,7 @@ class TestCacheStoreToolTrace:
         assert got.trace.final_text is None
 
     async def test_text_rows_carry_no_trace(self, store: CacheStore) -> None:
-        await store.put("k", **_put_kwargs())  # type: ignore[arg-type]
+        await store.put("k", **_put_kwargs())
         got = await store.get("k")
         assert got is not None
         assert got.trace is None
@@ -776,7 +826,7 @@ class TestCacheStoreToolTrace:
         store = await CacheStore.open(database_url=url)
         try:
             trace = _rich_trace()
-            await store.put("k", **_tool_put_kwargs(trace), trace=trace)  # type: ignore[arg-type]
+            await store.put("k", **_tool_put_kwargs(trace), trace=trace)
             async with store._engine.begin() as conn:
                 await conn.execute(
                     text("UPDATE cached_calls SET trace_json = :j"),
@@ -846,7 +896,7 @@ class TestCacheMigrationFromOriginMain:
         store = await CacheStore.open(database_url=url)
         try:
             trace = _rich_trace()
-            await store.put("new", **_tool_put_kwargs(trace), trace=trace)  # type: ignore[arg-type]
+            await store.put("new", **_tool_put_kwargs(trace), trace=trace)
             got = await store.get("new")
             assert got is not None
             assert got.trace == trace
@@ -953,12 +1003,90 @@ class TestToolRoundKeySensitivity:
 
 def test_the_suite_never_opens_the_users_real_cache() -> None:
     # Several command-level tests open the default on-disk cache. Without the
-    # autouse redirect in tests/conftest.py they read and wrote the developer's
-    # ~/.evalshift/cache.db, so a cached row from an earlier test run could
-    # serve a later one.
+    # autouse redirect in tests/conftest.py they read and wrote whatever
+    # .evalshift/cache.db the working directory held, so a cached row from an
+    # earlier test run could serve a later one.
     from evalshift_cli.cache import schema
 
-    assert Path.home() / ".evalshift" / "cache.db" != schema.DEFAULT_CACHE_PATH
+    assert schema.DEFAULT_CACHE_PATH != SHIPPED_CACHE_PATH
+    assert schema.DEFAULT_CACHE_PATH.is_absolute()
+
+
+class TestProjectScopedCache:
+    """The cache belongs to the folder a command runs in, beside ``.evalshift/runs/``.
+
+    It used to live at ``~/.evalshift/cache.db`` and be shared by every project
+    on the machine, so a candidate re-pointed at another backend under the same
+    model name replayed another project's answers.
+    """
+
+    def test_the_default_is_relative_to_the_project(self) -> None:
+        assert Path(".evalshift") / "cache.db" == SHIPPED_CACHE_PATH
+
+    async def test_two_project_folders_do_not_share_responses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("evalshift_cli.cache.schema.DEFAULT_CACHE_PATH", SHIPPED_CACHE_PATH)
+        first, second = tmp_path / "first", tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+
+        monkeypatch.chdir(first)
+        store = await CacheStore.open()
+        try:
+            await store.put("k", **_put_kwargs())
+        finally:
+            await store.close()
+        assert (first / ".evalshift" / "cache.db").is_file()
+
+        monkeypatch.chdir(second)
+        store = await CacheStore.open()
+        try:
+            assert await store.get("k") is None
+        finally:
+            await store.close()
+
+
+class TestRefresh:
+    """``refresh=True`` backs ``--no-cache``: every lookup misses, every write lands."""
+
+    async def test_a_refreshing_store_never_serves_a_hit(self, tmp_path: Path) -> None:
+        url = f"sqlite+aiosqlite:///{tmp_path / 'c.db'}"
+        plain = await CacheStore.open(database_url=url)
+        try:
+            await plain.put("k", **_put_kwargs())
+        finally:
+            await plain.close()
+
+        refreshing = await CacheStore.open(database_url=url, refresh=True)
+        try:
+            assert await refreshing.get("k") is None
+        finally:
+            await refreshing.close()
+
+    async def test_its_writes_replace_the_stale_entry(self, tmp_path: Path) -> None:
+        # Otherwise the next run without --no-cache would replay the stale
+        # answer the user just bypassed.
+        url = f"sqlite+aiosqlite:///{tmp_path / 'c.db'}"
+        plain = await CacheStore.open(database_url=url)
+        try:
+            await plain.put("k", **_put_kwargs())
+        finally:
+            await plain.close()
+
+        refreshing = await CacheStore.open(database_url=url, refresh=True)
+        try:
+            await refreshing.put("k", **{**_put_kwargs(), "response_text": "fresh"})
+        finally:
+            await refreshing.close()
+
+        again = await CacheStore.open(database_url=url)
+        try:
+            hit = await again.get("k")
+        finally:
+            await again.close()
+        assert hit is not None
+        assert hit.response_text == "fresh"
 
 
 class TestConcurrentSchemaSetup:

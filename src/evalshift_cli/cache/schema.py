@@ -7,9 +7,10 @@ hash to the same key, period. No fuzzy matching, no embeddings, no
 similarity searches; the simplest thing that could possibly work, per
 the PDF's guidance for the MVP.
 
-The cache lives at ``~/.evalshift/cache.db`` by default. Tests pass an
-in-memory SQLite URL via the ``database_url`` parameter on the engine
-factory; never reach for the real DB in unit tests.
+The cache lives at ``.evalshift/cache.db`` in the folder a command runs in,
+beside ``.evalshift/runs/``, so two projects never replay each other's
+responses. Tests pass an in-memory SQLite URL via the ``database_url``
+parameter on the engine factory; never reach for the real DB in unit tests.
 """
 
 from __future__ import annotations
@@ -21,7 +22,16 @@ from sqlalchemy import DateTime, Float, Integer, String, Text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-DEFAULT_CACHE_PATH: Path = Path.home() / ".evalshift" / "cache.db"
+DEFAULT_CACHE_PATH: Path = Path(".evalshift") / "cache.db"
+
+
+def legacy_cache_path() -> Path:
+    """Where every project shared one cache before it moved into the project.
+
+    Nothing reads it any more; ``evalshift cache clear`` points at it so it can
+    be deleted. A function rather than a constant so it follows ``$HOME``.
+    """
+    return Path.home() / ".evalshift" / "cache.db"
 
 
 def _utcnow() -> datetime:
@@ -112,4 +122,5 @@ __all__ = [
     "CachedCall",
     "create_engine",
     "default_database_url",
+    "legacy_cache_path",
 ]
